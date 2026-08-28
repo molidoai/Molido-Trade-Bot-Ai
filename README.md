@@ -26,7 +26,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 11** | Dashboard (Next.js) | ✅ Complete |
 | **PHASE 12** | Telegram Bot | ✅ Complete |
 | **PHASE 13–14** | Monitoring / Security / Anomaly | ✅ Complete |
-| PHASE 15 | Production Hardening checklist | ⏳ Next |
+| **PHASE 15** | Production Hardening | ✅ Complete |
+| PHASE 16–17 | Micro-Live / Live | 🔒 Human approval only |
 
 ---
 
@@ -230,3 +231,15 @@ cd telegram-bot && pip install -e . && python -m molido_telegram.bot
 - Env safety checks (`check_env_safety`)
 - AnomalyDetector: stale data, spread spike, price spike, bad OHLC
 - Severe anomalies recommend halting new entries (Circuit Breaker)
+
+
+## PHASE 15 – Production Hardening
+
+Docs:
+- `docs/PRODUCTION_HARDENING.md` – pre-flight & resource limits
+- `docs/ACCEPTANCE_CRITERIA.md` – honest status vs §50
+- `docs/OPERATOR_RUNBOOK.md` – circuit breaker / kill switch / reconcile
+- `infra/nginx/molido.conf` – sample reverse proxy
+- `scripts/preflight_check.py` – env + import smoke test
+
+**Micro-Live / Live are intentionally not auto-enabled.**
