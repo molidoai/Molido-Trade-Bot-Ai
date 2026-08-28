@@ -17,8 +17,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 2** | Broker Adapter (MT5 + Mock) + Market Data Engine | ✅ Complete |
 | **PHASE 3** | Indicator Engine | ✅ Complete |
 | **PHASE 4** | Strategy Engine | ✅ Complete |
-| PHASE 5 | Signal Engine | ⏳ Next |
-| PHASE 6 | Risk Engine (critical) | Pending |
+| **PHASE 5** | Signal Engine | ✅ Complete |
+| PHASE 6 | Risk Engine (critical) | ⏳ Next |
 
 ---
 
@@ -103,3 +103,14 @@ Built according to the Master Prompt specification.
   - `PROP_MAX_TOTAL_DRAWDOWN_PCT`
   - Profit target tracking (when set)
   - Phase awareness (Challenge / Verification / Funded)
+
+
+## PHASE 5 – Signal Engine
+
+- Multi-factor scoring (Trend, Momentum, Volume, Structure, MTF, Volatility, Strategy)
+- Configurable weights (default sum 100)
+- Acceptance threshold (default 60)
+- Mandatory Stop-Loss check
+- Minimum R:R filter
+- `FinalSignal` with full breakdown for Explainable Trade Card
+- Score is **never** a substitute for Risk Engine
