@@ -243,3 +243,15 @@ Docs:
 - `scripts/preflight_check.py` – env + import smoke test
 
 **Micro-Live / Live are intentionally not auto-enabled.**
+
+
+## Completion note
+
+Core platform phases **1–15 + remaining guards/regime/ops** are in the repository.
+
+See:
+- `docs/USER_ACTION_ITEMS.md` — what **you** must provide (VPS, DEMO, Telegram, approvals)
+- `docs/ACCEPTANCE_CRITERIA.md` — honest readiness
+- `docs/PRODUCTION_HARDENING.md` — before go-live
+
+**No profit guarantee. Live trading requires your explicit approval.**

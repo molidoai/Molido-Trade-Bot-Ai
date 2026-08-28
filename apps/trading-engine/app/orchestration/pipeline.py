@@ -21,6 +21,11 @@ from molido_signals.engine import SignalEngine, FinalSignal
 from molido_risk import RiskEngine, RiskContext, RiskLimits, AccountState, RiskDecision
 from molido_execution import ExecutionEngine, ExecRequest, ExecResult
 from molido_portfolio import PositionManager, PortfolioManager, Reconciler
+try:
+    from molido_guards import TradingHoursGuard, NewsBlackoutGuard
+    from molido_regime import MarketRegimeEngine
+except ImportError:
+    TradingHoursGuard = NewsBlackoutGuard = MarketRegimeEngine = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +78,16 @@ class TradingPipeline:
         # Gate: master switch + reconciliation
         if not master_bot_on:
             return PipelineResult(skipped_reason="Master bot is OFF")
+
+        if TradingHoursGuard is not None:
+            ok_h, why_h = TradingHoursGuard().allow_new_entries()
+            if not ok_h:
+                return PipelineResult(skipped_reason=f"TradingHours: {why_h}")
+
+        if NewsBlackoutGuard is not None:
+            ok_n, why_n = NewsBlackoutGuard().allow_new_entries(symbol=symbol)
+            if not ok_n:
+                return PipelineResult(skipped_reason=f"NewsBlackout: {why_n}")
 
         can, reason = self.reconciler.can_accept_new_entries()
         if not can:
