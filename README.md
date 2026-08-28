@@ -18,7 +18,7 @@ Professional Automated Forex Trading Platform.
 | **PHASE 3** | Indicator Engine | ✅ Complete |
 | **PHASE 4** | Strategy Engine | ✅ Complete |
 | **PHASE 5** | Signal Engine | ✅ Complete |
-| PHASE 6 | Risk Engine (critical) | ⏳ Next |
+| **PHASE 6** | Risk Engine (critical) | ✅ Complete |
 
 ---
 
@@ -114,3 +114,24 @@ Built according to the Master Prompt specification.
 - Minimum R:R filter
 - `FinalSignal` with full breakdown for Explainable Trade Card
 - Score is **never** a substitute for Risk Engine
+
+
+## PHASE 6 – Risk Engine (Critical)
+
+**No path may bypass this engine.**
+
+Checks (any failure → NO TRADE):
+- Mandatory Stop-Loss
+- Min Risk/Reward
+- Spread limit
+- Daily loss limit → trips Circuit Breaker
+- Max drawdown → trips Circuit Breaker
+- Weekly loss
+- Max open positions
+- Cooldown
+- Volatility regime scaling / block
+- Symbol exposure & Portfolio exposure
+- Position sizing from **Risk Budget × Stop Distance** (not fixed lots)
+- PROP mode uses firm daily-loss & drawdown limits
+
+Outputs: `ALLOW` | `REDUCE` (smaller lot) | `DENY`
