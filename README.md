@@ -20,7 +20,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 5** | Signal Engine | ✅ Complete |
 | **PHASE 6** | Risk Engine (critical) | ✅ Complete |
 | **PHASE 7** | Execution Engine | ✅ Complete |
-| PHASE 8 | Position / Portfolio / Reconciliation | ⏳ Next |
+| **PHASE 8** | Position / Portfolio / Reconciliation | ✅ Complete |
+| PHASE 9 | Backtester | ⏳ Next |
 
 ---
 
@@ -148,3 +149,12 @@ Outputs: `ALLOW` | `REDUCE` (smaller lot) | `DENY`
 - Partial fills, reject, cancel
 - EXIT / close path with `position_ticket`
 - Slippage measurement on fill
+
+
+## PHASE 8 – Position / Portfolio / Reconciliation
+
+- **PositionManager**: broker is source of truth; `sync_from_broker()`
+- **PortfolioManager**: equity, exposure, drawdown, currency exposure
+- **Reconciler**: on unknown state → pause entries → sync → resume
+- `can_accept_new_entries()` gate for Trading Engine
+- Converts snapshot → RiskEngine `AccountState`
