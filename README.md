@@ -22,7 +22,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 7** | Execution Engine | ✅ Complete |
 | **PHASE 8** | Position / Portfolio / Reconciliation | ✅ Complete |
 | **PHASE 9** | Backtester | ✅ Complete |
-| PHASE 10 | Paper / Demo Account | ⏳ Next |
+| **PHASE 10** | Paper / Demo Account | ✅ Complete |
+| PHASE 11 | Dashboard (Next.js) | ⏳ Next |
 
 ---
 
@@ -168,3 +169,19 @@ Outputs: `ALLOW` | `REDUCE` (smaller lot) | `DENY`
 - Cost model: spread + slippage + commission (Gross vs Net)
 - SL/TP simulation (conservative: SL first on adverse bars)
 - Metrics: Net Profit, Win Rate, Profit Factor, Max DD, Sharpe, Sortino, Expectancy
+
+
+## PHASE 10 – Paper / Demo Trading
+
+- **TradingPipeline**: full path Strategy → Signal → Risk → Execution (no bypass)
+- **PaperRunner**: timed loop over symbols with MockBroker (or real DEMO MT5)
+- Master ON/OFF gate + Reconciler gate before every entry
+- Default indicators + strategies pre-wired
+- Safe for capital: Mock by default; DEMO MT5 when credentials provided
+
+Run:
+```bash
+cd apps/trading-engine
+export PYTHONPATH=../../packages/shared:../../packages/broker:../../packages/indicators:../../packages/strategies:../../packages/signals:../../packages/risk:../../packages/execution:../../packages/portfolio:.
+python -m app.paper.runner
+```
