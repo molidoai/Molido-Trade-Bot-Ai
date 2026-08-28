@@ -25,7 +25,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 10** | Paper / Demo Account | ✅ Complete |
 | **PHASE 11** | Dashboard (Next.js) | ✅ Complete |
 | **PHASE 12** | Telegram Bot | ✅ Complete |
-| PHASE 13+ | Monitoring / Security / Hardening | ⏳ Next |
+| **PHASE 13–14** | Monitoring / Security / Anomaly | ✅ Complete |
+| PHASE 15 | Production Hardening checklist | ⏳ Next |
 
 ---
 
@@ -220,3 +221,12 @@ export TELEGRAM_BOT_TOKEN=...
 export TELEGRAM_ADMIN_CHAT_ID=...
 cd telegram-bot && pip install -e . && python -m molido_telegram.bot
 ```
+
+
+## PHASE 13–14 – Observability, Security, Anomaly
+
+- Structured JSON logging with secret redaction
+- Prometheus-compatible metrics (`/api/v1/metrics`)
+- Env safety checks (`check_env_safety`)
+- AnomalyDetector: stale data, spread spike, price spike, bad OHLC
+- Severe anomalies recommend halting new entries (Circuit Breaker)
