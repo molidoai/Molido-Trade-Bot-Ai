@@ -24,7 +24,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 9** | Backtester | ✅ Complete |
 | **PHASE 10** | Paper / Demo Account | ✅ Complete |
 | **PHASE 11** | Dashboard (Next.js) | ✅ Complete |
-| PHASE 12 | Telegram Bot | ⏳ Next |
+| **PHASE 12** | Telegram Bot | ✅ Complete |
+| PHASE 13+ | Monitoring / Security / Hardening | ⏳ Next |
 
 ---
 
@@ -202,4 +203,20 @@ cd frontend
 npm install
 npm run dev
 # http://localhost:3000
+```
+
+
+## PHASE 12 – Telegram Bot
+
+- Control + notifications only (no Risk bypass)
+- Commands: /start /status /balance /pnl /positions /risk /mode /pause /resume /stop
+- Admin-only for pause/resume/stop
+- Sensitive actions require `/confirm`
+- Alerts: trade open/close, daily loss, drawdown, circuit breaker, API errors
+- Auth: allowed chat IDs only
+
+```bash
+export TELEGRAM_BOT_TOKEN=...
+export TELEGRAM_ADMIN_CHAT_ID=...
+cd telegram-bot && pip install -e . && python -m molido_telegram.bot
 ```
