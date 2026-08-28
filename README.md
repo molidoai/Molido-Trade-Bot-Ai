@@ -21,7 +21,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 6** | Risk Engine (critical) | ✅ Complete |
 | **PHASE 7** | Execution Engine | ✅ Complete |
 | **PHASE 8** | Position / Portfolio / Reconciliation | ✅ Complete |
-| PHASE 9 | Backtester | ⏳ Next |
+| **PHASE 9** | Backtester | ✅ Complete |
+| PHASE 10 | Paper / Demo Account | ⏳ Next |
 
 ---
 
@@ -158,3 +159,12 @@ Outputs: `ALLOW` | `REDUCE` (smaller lot) | `DENY`
 - **Reconciler**: on unknown state → pause entries → sync → resume
 - `can_accept_new_entries()` gate for Trading Engine
 - Converts snapshot → RiskEngine `AccountState`
+
+
+## PHASE 9 – Backtester
+
+- Event-driven, bar-by-bar (no look-ahead)
+- Reuses live IndicatorEngine + StrategyEngine
+- Cost model: spread + slippage + commission (Gross vs Net)
+- SL/TP simulation (conservative: SL first on adverse bars)
+- Metrics: Net Profit, Win Rate, Profit Factor, Max DD, Sharpe, Sortino, Expectancy
