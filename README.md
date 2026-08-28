@@ -23,7 +23,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 8** | Position / Portfolio / Reconciliation | ✅ Complete |
 | **PHASE 9** | Backtester | ✅ Complete |
 | **PHASE 10** | Paper / Demo Account | ✅ Complete |
-| PHASE 11 | Dashboard (Next.js) | ⏳ Next |
+| **PHASE 11** | Dashboard (Next.js) | ✅ Complete |
+| PHASE 12 | Telegram Bot | ⏳ Next |
 
 ---
 
@@ -184,4 +185,21 @@ Run:
 cd apps/trading-engine
 export PYTHONPATH=../../packages/shared:../../packages/broker:../../packages/indicators:../../packages/strategies:../../packages/signals:../../packages/risk:../../packages/execution:../../packages/portfolio:.
 python -m app.paper.runner
+```
+
+
+## PHASE 11 – Web Dashboard
+
+- Next.js 14 + TypeScript + Tailwind
+- RTL Persian UI, dark theme
+- Layout: Env banner (DEMO/PROP/REAL), Sidebar, TopBar, Kill Switch
+- Overview page with system status from API
+- Placeholder routes: live, positions, strategies, risk, settings, health
+- `NEXT_PUBLIC_API_URL` points at FastAPI backend
+
+```bash
+cd frontend
+npm install
+npm run dev
+# http://localhost:3000
 ```

@@ -81,3 +81,19 @@ services:
 volumes:
   postgres_data:
   redis_data:
+
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     NEXT_PUBLIC_API_URL: http://api:8000/api/v1
+  #   depends_on:
+  #     - api
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         cpus: "0.5"
+  #         memory: 512M
