@@ -16,8 +16,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 1** | Foundation + Config + Docker + Database + Auth | ✅ Complete |
 | **PHASE 2** | Broker Adapter (MT5 + Mock) + Market Data Engine | ✅ Complete |
 | **PHASE 3** | Indicator Engine | ✅ Complete |
-| PHASE 4 | Strategy Engine | ⏳ Next |
-| PHASE 5 | Signal Engine | Pending |
+| **PHASE 4** | Strategy Engine | ✅ Complete |
+| PHASE 5 | Signal Engine | ⏳ Next |
 | PHASE 6 | Risk Engine (critical) | Pending |
 
 ---
