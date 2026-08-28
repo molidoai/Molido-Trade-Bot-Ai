@@ -24,16 +24,19 @@ async def health(settings: Settings = Depends(get_settings)):
 async def system_status(settings: Settings = Depends(get_settings)):
     """
     High-level system status for Dashboard and Telegram.
-    In later phases this will query real Redis/DB/Broker state.
     """
     return SystemStatus(
         account_mode=settings.trading_account_mode,
         master_bot_enabled=settings.master_bot_enabled,
-        database="unknown",      # will be checked in later phases
+        database="unknown",
         redis="unknown",
-        risk_engine="ready",     # placeholder until Risk Engine is built
+        risk_engine="ready",
         circuit_breaker="inactive",
         trading_hours_ok=True,
         news_blackout=False,
         last_sync=None,
+        prop_firm_name=settings.prop_firm_name if settings.is_prop_account else None,
+        prop_phase=settings.prop_phase if settings.is_prop_account else None,
+        prop_max_daily_loss_pct=settings.prop_max_daily_loss_pct if settings.is_prop_account else None,
+        prop_max_total_drawdown_pct=settings.prop_max_total_drawdown_pct if settings.is_prop_account else None,
     )

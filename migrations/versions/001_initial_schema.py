@@ -21,7 +21,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     # Enums
     user_role = sa.Enum("admin", "observer", name="user_role")
-    account_type = sa.Enum("DEMO", "REAL", name="account_type")
+    account_type = sa.Enum("DEMO", "PROP", "REAL", name="account_type")
     broker_platform = sa.Enum("MT5", "MT4", "OANDA", "FIX", "OTHER", name="broker_platform")
     strategy_status = sa.Enum(
         "DRAFT", "BACKTEST", "PAPER", "SHADOW", "DEMO", "MICRO_LIVE", "LIVE", "DISABLED",

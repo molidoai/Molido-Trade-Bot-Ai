@@ -85,3 +85,21 @@ Each strategy produces Signals only – never sends orders directly.
 ---
 
 Built according to the Master Prompt specification.
+
+---
+
+## Account Modes
+
+| Mode | Description | Default Risk Behaviour |
+|------|-------------|------------------------|
+| **DEMO** | Practice / broker demo account | Standard risk limits |
+| **PROP** | Prop Firm (FTMO, FundedNext, …) | Uses firm’s max daily loss & max drawdown |
+| **REAL** | Personal live capital | Strictest confirmation (2-step) required |
+
+- Default mode is always **DEMO**.
+- Switching to **PROP** or **REAL** requires explicit action and is audited.
+- In **PROP** mode the Risk Engine will enforce:
+  - `PROP_MAX_DAILY_LOSS_PCT`
+  - `PROP_MAX_TOTAL_DRAWDOWN_PCT`
+  - Profit target tracking (when set)
+  - Phase awareness (Challenge / Verification / Funded)

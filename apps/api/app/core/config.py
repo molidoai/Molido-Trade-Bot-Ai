@@ -39,7 +39,10 @@ class Settings(BaseSettings):
     redis_db: int = 0
 
     # Trading Mode (Safety critical)
-    trading_account_mode: Literal["DEMO", "REAL"] = "DEMO"
+    # DEMO = safe default
+    # PROP = Prop Firm challenge / funded account (strict risk rules)
+    # REAL  = personal live capital (highest risk – requires 2-step confirmation)
+    trading_account_mode: Literal["DEMO", "PROP", "REAL"] = "DEMO"
     master_bot_enabled: bool = False  # MASTER ON/OFF – default OFF
 
     # MT5 DEMO
@@ -48,7 +51,19 @@ class Settings(BaseSettings):
     mt5_demo_server: str | None = None
     mt5_demo_path: str | None = None
 
-    # MT5 REAL (must remain empty until explicit activation)
+    # MT5 PROP (Prop Firm account)
+    mt5_prop_login: int | None = None
+    mt5_prop_password: str | None = None
+    mt5_prop_server: str | None = None
+    mt5_prop_path: str | None = None
+    prop_firm_name: str | None = None          # e.g. FTMO, FundedNext
+    prop_phase: str | None = None              # CHALLENGE / VERIFICATION / FUNDED
+    prop_account_size: float | None = None     # e.g. 100000
+    prop_max_daily_loss_pct: float = 5.0
+    prop_max_total_drawdown_pct: float = 10.0
+    prop_profit_target_pct: float | None = None
+
+    # MT5 REAL (leave empty until ready)
     mt5_real_login: int | None = None
     mt5_real_password: str | None = None
     mt5_real_server: str | None = None
@@ -59,7 +74,7 @@ class Settings(BaseSettings):
     telegram_admin_chat_id: str | None = None
     telegram_allowed_chat_ids: str = ""
 
-    # Risk defaults
+    # Risk defaults (can be overridden; PROP mode uses stricter values)
     default_risk_per_trade: float = 0.005
     max_daily_loss: float = 0.02
     max_drawdown: float = 0.05
@@ -97,11 +112,27 @@ class Settings(BaseSettings):
     def is_real_account(self) -> bool:
         return self.trading_account_mode == "REAL"
 
+    @property
+    def is_prop_account(self) -> bool:
+        return self.trading_account_mode == "PROP"
+
+    @property
+    def effective_max_daily_loss(self) -> float:
+        """PROP accounts use the firm’s daily loss limit if set."""
+        if self.is_prop_account and self.prop_max_daily_loss_pct:
+            return self.prop_max_daily_loss_pct / 100.0
+        return self.max_daily_loss
+
+    @property
+    def effective_max_drawdown(self) -> float:
+        if self.is_prop_account and self.prop_max_total_drawdown_pct:
+            return self.prop_max_total_drawdown_pct / 100.0
+        return self.max_drawdown
+
     @field_validator("trading_account_mode")
     @classmethod
-    def force_demo_by_default(cls, v: str) -> str:
-        # Extra safety: never allow REAL unless explicitly set
-        if v not in ("DEMO", "REAL"):
+    def force_safe_default(cls, v: str) -> str:
+        if v not in ("DEMO", "PROP", "REAL"):
             return "DEMO"
         return v
 
