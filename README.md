@@ -19,6 +19,8 @@ Professional Automated Forex Trading Platform.
 | **PHASE 4** | Strategy Engine | ✅ Complete |
 | **PHASE 5** | Signal Engine | ✅ Complete |
 | **PHASE 6** | Risk Engine (critical) | ✅ Complete |
+| **PHASE 7** | Execution Engine | ✅ Complete |
+| PHASE 8 | Position / Portfolio / Reconciliation | ⏳ Next |
 
 ---
 
@@ -135,3 +137,14 @@ Checks (any failure → NO TRADE):
 - PROP mode uses firm daily-loss & drawdown limits
 
 Outputs: `ALLOW` | `REDUCE` (smaller lot) | `DENY`
+
+
+## PHASE 7 – Execution Engine
+
+- Runs **only after** Risk Engine ALLOW / REDUCE
+- Idempotency via `client_order_id` (at-most-once)
+- Spread check at send time
+- Safe retry (no retry after timeout → UNKNOWN + reconcile)
+- Partial fills, reject, cancel
+- EXIT / close path with `position_ticket`
+- Slippage measurement on fill
