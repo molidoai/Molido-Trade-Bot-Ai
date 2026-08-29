@@ -28,10 +28,15 @@ class ManagedPosition:
         if self.stop_loss is None:
             return 0.0
         dist = abs(self.entry_price - self.stop_loss)
-        # rough $ risk (same heuristic as RiskEngine)
-        pip = 0.01 if self.entry_price > 50 else 0.0001
-        pips = dist / pip if pip else 0
-        return pips * 10.0 * self.volume
+        try:
+            from molido_risk.engine import RiskEngine
+            pip = RiskEngine._estimate_pip_size(self.symbol, self.entry_price)
+            pips = dist / pip if pip else 0.0
+            return RiskEngine._risk_per_lot(self.symbol, self.entry_price, pips) * self.volume
+        except Exception:
+            pip = 0.01 if self.entry_price > 50 else 0.0001
+            pips = dist / pip if pip else 0.0
+            return pips * 10.0 * self.volume
 
 
 @dataclass
@@ -40,6 +45,7 @@ class PortfolioSnapshot:
     equity: float
     margin_used: float = 0.0
     free_margin: float = 0.0
+    margin_level: float | None = None
     unrealized_pnl: float = 0.0
     realized_pnl_today: float = 0.0
     open_positions: int = 0
@@ -50,6 +56,8 @@ class PortfolioSnapshot:
     peak_equity: float = 0.0
     account_mode: str = "DEMO"
     as_of: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    open_symbols: list[str] = field(default_factory=list)
+    open_side_by_symbol: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass

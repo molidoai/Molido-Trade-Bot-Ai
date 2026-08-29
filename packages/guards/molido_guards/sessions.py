@@ -1,7 +1,9 @@
 """FX session calendar.
 
 Hours are in America/New_York so Sunday open and Friday close follow US DST.
-A fixed UTC offset would shift a whole session for a few weeks each spring.
+New entries only during London/NY overlap. Weekend, Monday gap, Friday close
+and rollover are blocked. Thursday after NY 16:00 blocks new entries so we
+do not hold into Friday weekend swap.
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ class SessionWindow:
     overnight: bool = False
 
 
-# Instrument-local (NY) windows used by FX majors.
 FX_SESSIONS = [
     SessionWindow("Tokyo", time(19, 0), time(4, 0), overnight=True),
     SessionWindow("London", time(3, 0), time(12, 0)),
@@ -39,8 +40,9 @@ def _in_window(now_ny: datetime, w: SessionWindow) -> bool:
 class SessionCalendar:
     """Was this FX market open at this instant, and which liquidity sessions?"""
 
-    def __init__(self, block_weekends: bool = True):
+    def __init__(self, block_weekends: bool = True, overlap_only: bool = True):
         self.block_weekends = block_weekends
+        self.overlap_only = overlap_only
 
     def now_ny(self, now: datetime | None = None) -> datetime:
         now = now or datetime.now(timezone.utc)
@@ -52,13 +54,12 @@ class SessionCalendar:
         ny = self.now_ny(now)
         wd = ny.weekday()  # Mon=0
         t = ny.time()
-        # Sunday 17:00 NY open → Friday 17:00 NY close
         if wd == 5:
-            return False, "Saturday — FX closed"
+            return False, "Saturday - FX closed"
         if wd == 6 and t < time(17, 0):
-            return False, "Sunday before NY 17:00 — FX closed"
+            return False, "Sunday before NY 17:00 - FX closed"
         if wd == 4 and t >= time(17, 0):
-            return False, "Friday after NY 17:00 — FX closed"
+            return False, "Friday after NY 17:00 - FX closed"
         if self.block_weekends and wd >= 5:
             return False, "Weekend"
         return True, "FX week open"
@@ -70,11 +71,31 @@ class SessionCalendar:
         ny = self.now_ny(now)
         return [w.name for w in FX_SESSIONS if _in_window(ny, w)]
 
+    def should_flatten(self, now: datetime | None = None) -> tuple[bool, str]:
+        """Close opens Friday 16:00 America/New_York."""
+        ny = self.now_ny(now)
+        if ny.weekday() == 4 and ny.time() >= time(16, 0):
+            return True, "Friday after NY 16:00 - flatten open positions"
+        return False, ""
+
     def allow_new_entries(self, now: datetime | None = None) -> tuple[bool, str]:
         ok, why = self.is_fx_week_open(now)
         if not ok:
             return False, why
+        ny = self.now_ny(now)
+        wd = ny.weekday()
+        t = ny.time()
+        if wd == 0 and t < time(8, 30):
+            return False, "Monday first 30 min NY - gap filter"
+        if wd == 3 and t >= time(16, 0):
+            return False, "Thursday after NY 16:00 - no new entries into Friday weekend swap"
+        if wd == 4 and t >= time(16, 0):
+            return False, "Friday after NY 16:00 - no new entries"
+        if time(16, 45) <= t <= time(17, 15):
+            return False, "NY rollover window"
         active = self.active_sessions(now)
         if not active:
             return False, "Outside Sydney/Tokyo/London/NY sessions"
+        if self.overlap_only and "London_NY_Overlap" not in active:
+            return False, "New entries only in London/NY overlap"
         return True, "In session: " + ", ".join(active)
