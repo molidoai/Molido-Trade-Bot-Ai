@@ -54,7 +54,7 @@ def test_brain1_vetoes_bad_universe_score():
 
 
 def test_brain3_vetoes_correlation():
-    b = DecisionBrain()
+    b = DecisionBrain(min_p=0.0, min_ev=-10.0)
     d = b.decide(
         _sig(),
         h1_side="BUY",
@@ -64,10 +64,11 @@ def test_brain3_vetoes_correlation():
     )
     assert d.allow is False
     assert any("correlat" in r.lower() for r in d.reasons)
+    assert any(v.name == "survival" and not v.allow for v in d.votes)
 
 
 def test_brain3_vetoes_daily_loss():
-    b = DecisionBrain()
+    b = DecisionBrain(min_p=0.0, min_ev=-10.0)
     d = b.decide(
         _sig(),
         h1_side="BUY",
@@ -79,6 +80,7 @@ def test_brain3_vetoes_daily_loss():
     )
     assert d.allow is False
     assert any("daily loss" in r.lower() for r in d.reasons)
+    assert any(v.name == "survival" and not v.allow for v in d.votes)
 
 
 def test_series_min_size_not_enlarge():
