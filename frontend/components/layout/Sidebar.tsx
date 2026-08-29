@@ -24,12 +24,10 @@ export function Sidebar() {
   return (
     <aside className="flex w-60 shrink-0 flex-col border-l border-white/10 bg-slate-950/35 backdrop-blur-xl">
       <div className="flex items-center gap-3 border-b border-white/10 p-5">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-400 to-amber-400 text-sm font-black text-slate-950 shadow-glow">
-          FX
-        </div>
+        <img src="/logo.svg" alt="Molido Trade" width={40} height={40} className="h-10 w-10 rounded-xl shadow-glow" />
         <div>
           <div className="aurora text-sm font-bold">Molido Trade</div>
-          <div className="text-[11px] text-slate-400">LIVE deck v0.2</div>
+          <div className="text-[11px] text-slate-400">LIVE deck v0.3</div>
         </div>
       </div>
       <nav className="flex-1 space-y-0.5 overflow-y-auto p-3 text-sm">
