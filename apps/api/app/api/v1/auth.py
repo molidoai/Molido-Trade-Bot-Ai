@@ -2,6 +2,10 @@
 Authentication endpoints.
 """
 
+from __future__ import annotations
+import time
+from collections import defaultdict
+
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -11,6 +15,21 @@ from app.schemas.auth import UserCreate, UserLogin, Token, UserResponse
 from app.services.auth import get_user_by_email, create_user, authenticate_user, login_user, count_users
 
 router = APIRouter()
+
+_login_hits: dict[str, list[float]] = defaultdict(list)
+_LOGIN_WINDOW = 60.0
+_LOGIN_MAX = 8
+
+
+def _rate_ok(ip: str) -> bool:
+    now = time.time()
+    hits = [t for t in _login_hits.get(ip, []) if now - t < _LOGIN_WINDOW]
+    if len(hits) >= _LOGIN_MAX:
+        _login_hits[ip] = hits
+        return False
+    hits.append(now)
+    _login_hits[ip] = hits
+    return True
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
@@ -40,6 +59,12 @@ async def login(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
+    ip = request.client.host if request.client else "unknown"
+    if not _rate_ok(ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts, try again later",
+        )
     user = await authenticate_user(db, user_in.email, user_in.password)
     if not user:
         raise HTTPException(
@@ -48,7 +73,6 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    ip = request.client.host if request.client else None
     user_agent = request.headers.get("user-agent")
     access_token = await login_user(db, user, ip=ip, user_agent=user_agent)
     await db.commit()

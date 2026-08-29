@@ -1,5 +1,7 @@
 """Runtime settings stored on the server, never in git.
-Editable from the dashboard. Defaults are DEMO + tight risk for the trial week."""
+Editable from the dashboard. Defaults are DEMO + tight risk for the trial week.
+symbols/timeframe empty or 'auto' → brain universe picker.
+"""
 
 from __future__ import annotations
 import json
@@ -22,8 +24,8 @@ DEFAULTS = {
     "mt5_real_password": "",
     "mt5_real_server": "",
     "mt5_real_path": "",
-    "symbols": "EURUSD,GBPUSD,USDJPY",
-    "timeframe": "M15",
+    "symbols": "auto",
+    "timeframe": "AUTO",
     "telegram_bot_token": "",
     "telegram_admin_chat_id": "",
     "telegram_allowed_chat_ids": "",
