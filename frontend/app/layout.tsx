@@ -1,9 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Sidebar } from "@/components/layout/Sidebar";
-import { TopBar } from "@/components/layout/TopBar";
-import { EnvBanner } from "@/components/layout/EnvBanner";
 import { Scene3D } from "@/components/scene/Scene3D";
+import { AuthShell } from "@/components/auth/AuthShell";
 
 export const metadata: Metadata = {
   title: "Molido Trade · LIVE",
@@ -15,16 +13,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="fa" dir="rtl" className="dark">
       <body className="min-h-screen">
         <Scene3D />
-        <div className="relative z-10 flex h-screen flex-col">
-          <EnvBanner />
-          <div className="flex min-h-0 flex-1">
-            <Sidebar />
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              <TopBar />
-              <main className="flex-1 overflow-y-auto p-6">{children}</main>
-            </div>
-          </div>
-        </div>
+        <AuthShell>{children}</AuthShell>
       </body>
     </html>
   );
