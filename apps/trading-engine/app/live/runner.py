@@ -1,10 +1,8 @@
 """
 LIVE trading runner.
 
-Reads dashboard runtime settings from RUNTIME_SETTINGS_PATH when present,
-then falls back to env. RiskEngine is still mandatory. Session calendar,
-point-in-time bars, quality gate and regime are applied before any order.
-Brain picks symbol/TF from a small universe; never scans every pair x TF.
+Automatic: universe picker + AUTO timeframe, TrendFollowing only by default.
+No manual pair picking. Heartbeat each cycle. Three numeric brains via pipeline.
 """
 
 from __future__ import annotations
@@ -26,7 +24,8 @@ from molido_execution import ExecutionEngine
 from molido_portfolio import PositionManager, PortfolioManager, Reconciler
 from molido_portfolio.trade_manager import TradeManager
 from molido_regime import MarketRegimeEngine
-from molido_guards import SessionCalendar
+from molido_guards import SessionCalendar, NewsBlackoutGuard
+from molido_strategies.engine import parse_strategy_names
 from molido_brain import (
     DecisionBrain,
     h1_side_from_bars,
@@ -35,6 +34,7 @@ from molido_brain import (
     resolve_universe,
     resolve_trade_timeframe,
     cheap_score,
+    overnight_swap_r,
 )
 from app.orchestration.pipeline import TradingPipeline
 from app.data.market_data import MarketDataEngine
@@ -87,8 +87,20 @@ def _poll_ops(default_master: bool) -> tuple[bool, int]:
         return default_master, 0
 
 
-def _parse_symbols(raw: str) -> list[str]:
-    return resolve_universe(raw)
+def _post_heartbeat() -> None:
+    url = os.getenv("OPS_HEARTBEAT_URL") or os.getenv(
+        "OPS_STATE_URL", "http://api:8000/api/v1/ops/state"
+    ).replace("/state", "/heartbeat")
+    try:
+        req = urllib.request.Request(
+            url,
+            data=b"{}",
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=2).read()
+    except Exception:
+        logger.debug("ops heartbeat post failed")
 
 
 class LiveRunner:
@@ -99,8 +111,8 @@ class LiveRunner:
         cycle_seconds: float = 15.0,
     ):
         rt = _load_runtime()
-        self.tf_override = _pick(rt, "timeframe") or "AUTO"
-        self.symbols = symbols or resolve_universe(_pick(rt, "symbols") or "auto")
+        self.tf_override = "AUTO"
+        self.symbols = resolve_universe("auto")
         self.timeframe = TimeFrame.M15
         self.picker = UniversePicker()
         self.cycle_seconds = cycle_seconds
@@ -120,6 +132,8 @@ class LiveRunner:
         self.trade_manager = None
         self.regime = MarketRegimeEngine()
         self.calendar = SessionCalendar()
+        self.news = NewsBlackoutGuard()
+        self.news.load_from_disk()
         self.journal = TradeJournal()
         self.brain = DecisionBrain()
 
@@ -133,7 +147,7 @@ class LiveRunner:
         self.indicators.add_from_registry("Supertrend", period=10, multiplier=3.0)
 
         self.strategies = StrategyEngine()
-        self.strategies.add_from_registry("TrendFollowing")
+        self.strategies.configure_live(parse_strategy_names(rt.get("strategy_names")))
 
         self.signals = SignalEngine(accept_threshold=55.0)
         self.risk = RiskEngine(self._limits_from(rt))
@@ -144,7 +158,6 @@ class LiveRunner:
                 return float(rt.get(key, default))
             except (TypeError, ValueError):
                 return default
-
         try:
             max_pos = int(rt.get("max_open_positions", 3))
         except (TypeError, ValueError):
@@ -159,8 +172,8 @@ class LiveRunner:
     def _apply_runtime(self, rt: dict) -> None:
         mode = (_pick(rt, "trading_account_mode", env="TRADING_ACCOUNT_MODE") or self.account_mode).upper()
         self.account_mode = mode
-        self.tf_override = _pick(rt, "timeframe") or "AUTO"
-        self.symbols = resolve_universe(_pick(rt, "symbols") or "auto")
+        self.tf_override = "AUTO"
+        self.symbols = resolve_universe("auto")
         self.timeframe = TimeFrame.M15
         if "master_bot_enabled" in rt:
             self.master_bot_on = bool(rt.get("master_bot_enabled"))
@@ -171,6 +184,7 @@ class LiveRunner:
             self.portfolio.account_mode = mode
         if self.market_data is not None:
             self.market_data.symbols = self.symbols
+        self.strategies.configure_live(parse_strategy_names(rt.get("strategy_names")))
 
     def _mt5_creds(self, rt: dict) -> tuple[int | None, str, str, str | None]:
         login_raw = _pick(rt, "mt5_login", "mt5_real_login", env="MT5_REAL_LOGIN")
@@ -186,13 +200,7 @@ class LiveRunner:
         return login, password, server, path
 
     def _bind_broker(self, login: int, password: str, server: str, path: str | None) -> None:
-        self.broker = create_broker(
-            BrokerType.MT5,
-            login=login,
-            password=password,
-            server=server,
-            path=path,
-        )
+        self.broker = create_broker(BrokerType.MT5, login=login, password=password, server=server, path=path)
         self.execution = ExecutionEngine(self.broker)
         self.positions = PositionManager(self.broker)
         self.portfolio = PortfolioManager(self.broker, self.positions, account_mode=self.account_mode)
@@ -210,12 +218,9 @@ class LiveRunner:
             account_mode=self.account_mode,
             brain=self.brain,
             journal=self.journal,
+            news_guard=self.news,
         )
-        self.market_data = MarketDataEngine(
-            broker=self.broker,
-            symbols=self.symbols,
-            stale_threshold_seconds=60.0,
-        )
+        self.market_data = MarketDataEngine(broker=self.broker, symbols=self.symbols, stale_threshold_seconds=60.0)
 
     async def start(self) -> None:
         logger.info("LIVE runner waiting for MT5 credentials (dashboard Settings or env)")
@@ -228,18 +233,10 @@ class LiveRunner:
                 break
             logger.warning("MT5 login/password/server not set yet; retrying in 10s")
             await asyncio.sleep(10)
-
-        logger.info(
-            "LIVE runner starting | mode=%s | master=%s | symbols=%s",
-            self.account_mode,
-            "ON" if self.master_bot_on else "OFF",
-            self.symbols,
-        )
+        logger.info("LIVE runner starting | mode=%s | master=%s | symbols=%s", self.account_mode, "ON" if self.master_bot_on else "OFF", self.symbols)
         ok = await self.broker.connect()
         if not ok:
-            raise RuntimeError(
-                "LIVE MT5 connect failed. Need a running MT5 terminal (Windows or Wine) plus valid credentials."
-            )
+            raise RuntimeError("LIVE MT5 connect failed. Need a running MT5 terminal (Windows or Wine) plus valid credentials.")
         await self.reconciler.reconcile()
         await self.market_data.start()
         self._running = True
@@ -260,28 +257,26 @@ class LiveRunner:
 
     def set_master(self, on: bool) -> None:
         self.master_bot_on = on
-        logger.info("Master bot -> %s", "ON" if on else "OFF")
+        logger.info("Master bot → %s", "ON" if on else "OFF")
 
     async def _cycle(self) -> None:
+        _post_heartbeat()
         rt = _load_runtime()
         self._apply_runtime(rt)
+        self.news.load_from_disk()
         self.master_bot_on, flatten_seq = _poll_ops(self.master_bot_on)
-
         if flatten_seq > self._flatten_seen and self.trade_manager is not None:
             self._flatten_seen = flatten_seq
             acts = await self.trade_manager.flatten_all("ops flatten")
             for a in acts:
                 self.journal.append("flatten", reason="ops flatten", detail=a)
             telegram_notify("Molido flatten-all requested")
-
         flat_ok, flat_why = self.calendar.should_flatten()
         if flat_ok and self.trade_manager is not None and self.positions and self.positions.count() > 0:
             acts = await self.trade_manager.flatten_all(flat_why)
             for a in acts:
                 self.journal.append("flatten", reason=flat_why, detail=a)
             telegram_notify(f"Molido flatten: {flat_why}")
-
-        # Manage open positions only (do not scan the whole universe here)
         open_syms = []
         if self.positions is not None:
             open_syms = list({p.symbol for p in self.positions.get_all()})
@@ -290,53 +285,33 @@ class LiveRunner:
                 await self._manage_open(symbol)
             except Exception:
                 logger.exception("manage error on %s", symbol)
-
         sess_ok, sess_why = self.calendar.allow_new_entries()
         if not sess_ok:
             logger.info("LIVE session skip: %s", sess_why)
             return
-
         snap = await self.portfolio.snapshot()
-        logger.info(
-            "LIVE equity=%.2f | positions=%d | DD=%.2f%% | master=%s | sessions=%s",
-            snap.equity,
-            snap.open_positions,
-            snap.drawdown_pct,
-            "ON" if self.master_bot_on else "OFF",
-            ",".join(self.calendar.active_sessions()) or "-",
-        )
-
+        logger.info("LIVE equity=%.2f | positions=%d | DD=%.2f%% | master=%s | sessions=%s", snap.equity, snap.open_positions, snap.drawdown_pct, "ON" if self.master_bot_on else "OFF", ",".join(self.calendar.active_sessions()) or "-")
         stats = self.journal.journal_stats(20)
         if stats and stats["n"] >= 20 and stats["mean_r"] < 0 and self.brain.pause_on_negative_journal:
             logger.info("LIVE pause new entries: journal mean R=%.3f n=%s", stats["mean_r"], stats["n"])
             return
-
         overlap = "London_NY_Overlap" in self.calendar.active_sessions()
         picks = await self._pick_symbols(open_syms, overlap=overlap, session_ok=True)
-        logger.info(
-            "LIVE picker %s",
-            ",".join(f"{c.symbol}:{c.score:.2f}" for c in picks) or "(none)",
-        )
+        logger.info("LIVE picker %s", ",".join(f"{c.symbol}:{c.score:.2f}" for c in picks) or "(none)")
         for cand in picks:
-            symbol = cand.symbol
-            trade_tf = resolve_trade_timeframe(
-                self.tf_override,
-                overlap=overlap,
-                spread_ok=cand.spread_ok,
-            )
             try:
                 await self._evaluate_symbol(
-                    symbol,
-                    trade_tf,
+                    cand.symbol,
+                    resolve_trade_timeframe(self.tf_override, overlap=overlap, spread_ok=cand.spread_ok),
                     h1_side=cand.h1_side,
                     overlap=overlap,
                     tick_spread=cand.spread,
+                    universe_score=cand.score,
                 )
             except Exception:
-                logger.exception("LIVE cycle error on %s", symbol)
+                logger.exception("LIVE cycle error on %s", cand.symbol)
 
     async def _pick_symbols(self, open_syms: list[str], *, overlap: bool, session_ok: bool) -> list:
-        """Cheap scan of the universe, then brain rank. At most 1-2 new symbols."""
         ticks = {}
         spread_order = []
         for symbol in self.symbols:
@@ -361,42 +336,17 @@ class LiveRunner:
                 h1_map[symbol] = h1_side_from_bars(h1_bars)
             except (InsufficientDataError, Exception):
                 h1_map[symbol] = None
-
         rows: list[CheapCandidate] = []
         for symbol in self.symbols:
             tick = ticks.get(symbol)
             spread = tick.spread if tick is not None else None
             mid = tick.mid if tick is not None else None
-            score, reasons, spread_ok = cheap_score(
-                session_ok=session_ok,
-                overlap=overlap,
-                spread=spread,
-                mid=mid,
-                h1_side=h1_map.get(symbol),
-            )
-            rows.append(
-                CheapCandidate(
-                    symbol=symbol,
-                    score=score,
-                    spread=spread,
-                    mid=mid,
-                    h1_side=h1_map.get(symbol),
-                    spread_ok=spread_ok,
-                    reasons=reasons,
-                )
-            )
+            score, reasons, spread_ok = cheap_score(session_ok=session_ok, overlap=overlap, spread=spread, mid=mid, h1_side=h1_map.get(symbol))
+            rows.append(CheapCandidate(symbol=symbol, score=score, spread=spread, mid=mid, h1_side=h1_map.get(symbol), spread_ok=spread_ok, reasons=reasons))
         ranked = self.brain.rank_universe(self.picker.rank(rows))
         return self.picker.select(ranked, open_syms)
 
-    async def _evaluate_symbol(
-        self,
-        symbol: str,
-        trade_tf: TimeFrame,
-        *,
-        h1_side: str | None,
-        overlap: bool,
-        tick_spread: float | None,
-    ) -> None:
+    async def _evaluate_symbol(self, symbol: str, trade_tf: TimeFrame, *, h1_side: str | None, overlap: bool, tick_spread: float | None, universe_score: float | None = None) -> None:
         raw = await self.market_data.get_candles(symbol, trade_tf, count=160, use_cache=False)
         if not raw:
             return
@@ -416,33 +366,18 @@ class LiveRunner:
             tick = await self.broker.get_tick(symbol)
         spread = tick.spread if tick is not None else tick_spread
         result = await self.pipeline.on_candles(
-            symbol=symbol,
-            timeframe=trade_tf,
-            candles=candles,
-            regime=regime,
-            master_bot_on=self.master_bot_on,
-            h1_side=h1_side,
-            spread=spread,
-            tick=tick,
-            overlap=overlap,
+            symbol=symbol, timeframe=trade_tf, candles=candles, regime=regime,
+            master_bot_on=self.master_bot_on, h1_side=h1_side, spread=spread, tick=tick,
+            overlap=overlap, swap_r=overnight_swap_r(symbol=symbol, now=None),
+            session_ok=True, universe_score=universe_score,
         )
         if result.skipped_reason:
             logger.debug("%s skipped: %s", symbol, result.skipped_reason)
             return
         if result.exec_result and result.exec_result.success:
             side = result.signal.side.value if result.signal else "?"
-            logger.info(
-                "%s LIVE FILL %s %.2f lots @ %s | tf=%s | regime=%s",
-                symbol,
-                side,
-                result.lot_size,
-                result.exec_result.fill_price,
-                trade_tf.value,
-                regime,
-            )
-            telegram_notify(
-                f"Molido FILL {symbol} {side} {result.lot_size} @ {result.exec_result.fill_price} tf={trade_tf.value} regime={regime}"
-            )
+            logger.info("%s LIVE FILL %s %.2f lots @ %s | tf=%s | regime=%s", symbol, side, result.lot_size, result.exec_result.fill_price, trade_tf.value, regime)
+            telegram_notify(f"Molido FILL {symbol} {side} {result.lot_size} @ {result.exec_result.fill_price} tf={trade_tf.value} regime={regime}")
         elif result.exec_result and not result.exec_result.success:
             logger.warning("%s exec failed: %s", symbol, result.exec_result.message)
 
@@ -469,28 +404,13 @@ class LiveRunner:
             price = tick.mid
         for pos in self.positions.by_symbol(symbol):
             st = self.trade_manager._st(pos)
-            self.journal.update_mae_mfe(
-                pos.ticket,
-                price=price,
-                entry=pos.entry_price,
-                side=pos.side,
-                stop_distance=st.get("stop_dist"),
-            )
-        await self.trade_manager.manage_symbol(
-            symbol,
-            candles=candles,
-            atr=atr,
-            timeframe=self.timeframe,
-            price=price,
-        )
+            self.journal.update_mae_mfe(pos.ticket, price=price, entry=pos.entry_price, side=pos.side, stop_distance=st.get("stop_dist"))
+        await self.trade_manager.manage_symbol(symbol, candles=candles, atr=atr, timeframe=self.timeframe, price=price)
         await self.positions.sync_from_broker()
 
 
 async def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
     runner = LiveRunner()
     try:
         await runner.start()
