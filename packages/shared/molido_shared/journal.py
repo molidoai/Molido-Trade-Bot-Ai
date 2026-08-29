@@ -28,6 +28,11 @@ class TradeJournal:
             "ts": datetime.now(timezone.utc).isoformat(),
             "event": event,
         }
+        ticket = fields.get("ticket")
+        if event in ("close", "flatten", "exit") and ticket is not None:
+            st = self._open.get(str(ticket), {})
+            fields.setdefault("mae_r", st.get("mae_r", st.get("mae")))
+            fields.setdefault("mfe_r", st.get("mfe_r", st.get("mfe")))
         for k, v in fields.items():
             if v is not None:
                 rec[k] = v
@@ -40,9 +45,11 @@ class TradeJournal:
         ticket = rec.get("ticket")
         if event in ("fill", "accept") and ticket is not None:
             self._open[str(ticket)] = {
-                "mae": rec.get("mae", 0.0),
-                "mfe": rec.get("mfe", 0.0),
-                "entry": rec.get("entry"),
+                "mae": rec.get("mae_r", rec.get("mae", 0.0)),
+                "mfe": rec.get("mfe_r", rec.get("mfe", 0.0)),
+                "mae_r": rec.get("mae_r", rec.get("mae", 0.0)),
+                "mfe_r": rec.get("mfe_r", rec.get("mfe", 0.0)),
+                "entry": rec.get("entry") or rec.get("fill_price"),
                 "side": rec.get("side"),
             }
         if event in ("close", "flatten", "exit") and ticket is not None:
@@ -58,14 +65,21 @@ class TradeJournal:
         side: str | None,
         stop_distance: float | None,
     ) -> dict[str, Any] | None:
-        """Update open-ticket MAE/MFE from a real price. Skip if price unknown."""
+        """Update open-ticket MAE/MFE in R from a real price. Skip if price unknown."""
         if price is None or entry is None or not stop_distance:
             return None
-        st = self._open.setdefault(str(ticket), {"mae": 0.0, "mfe": 0.0})
+        st = self._open.setdefault(
+            str(ticket),
+            {"mae": 0.0, "mfe": 0.0, "mae_r": 0.0, "mfe_r": 0.0},
+        )
         direction = 1.0 if str(side or "").upper() == "BUY" else -1.0
         r = (float(price) - float(entry)) * direction / float(stop_distance)
-        st["mae"] = min(float(st.get("mae", 0.0)), r)
-        st["mfe"] = max(float(st.get("mfe", 0.0)), r)
+        mae_r = min(float(st.get("mae_r", st.get("mae", 0.0))), r)
+        mfe_r = max(float(st.get("mfe_r", st.get("mfe", 0.0))), r)
+        st["mae"] = mae_r
+        st["mfe"] = mfe_r
+        st["mae_r"] = mae_r
+        st["mfe_r"] = mfe_r
         st["entry"] = entry
         st["side"] = side
         st["last_price"] = price
@@ -73,8 +87,10 @@ class TradeJournal:
             "open_mark",
             ticket=str(ticket),
             price=price,
-            mae=round(st["mae"], 4),
-            mfe=round(st["mfe"], 4),
+            mae_r=round(mae_r, 4),
+            mfe_r=round(mfe_r, 4),
+            mae=round(mae_r, 4),
+            mfe=round(mfe_r, 4),
         )
 
     def last_closed_r(self, n: int = 20) -> list[float]:

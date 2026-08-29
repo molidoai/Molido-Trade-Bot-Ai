@@ -1,6 +1,9 @@
 """
 Strategy Engine – registry and evaluation orchestrator.
 Strategies only produce signals; they never send orders.
+
+Live default enables ONLY TrendFollowing until a DEMO journal says otherwise.
+DonchianBreakout and RSIMeanReversion stay in the registry, disabled.
 """
 
 from __future__ import annotations
@@ -20,6 +23,20 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "DonchianBreakout": DonchianBreakoutStrategy,
     "RSIMeanReversion": RSIMeanReversionStrategy,
 }
+
+DEFAULT_LIVE_STRATEGIES = ["TrendFollowing"]
+
+
+def parse_strategy_names(raw: Any) -> list[str]:
+    if raw is None:
+        return list(DEFAULT_LIVE_STRATEGIES)
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.replace(";", ",").split(",") if p.strip()]
+        return parts or list(DEFAULT_LIVE_STRATEGIES)
+    if isinstance(raw, (list, tuple)):
+        parts = [str(p).strip() for p in raw if str(p).strip()]
+        return parts or list(DEFAULT_LIVE_STRATEGIES)
+    return list(DEFAULT_LIVE_STRATEGIES)
 
 
 class StrategyEngine:
@@ -43,6 +60,17 @@ class StrategyEngine:
         if name in self._strategies:
             self._strategies[name].enabled = False
 
+    def configure_live(self, names: list[str] | None = None) -> None:
+        """Register every class; enable only `names` (default TrendFollowing)."""
+        enabled = parse_strategy_names(names)
+        for key in STRATEGY_REGISTRY:
+            if key not in self._strategies:
+                self.add_from_registry(key)
+            if key in enabled:
+                self.enable(key)
+            else:
+                self.disable(key)
+
     def list_strategies(self) -> list[dict[str, Any]]:
         return [
             {
@@ -57,6 +85,9 @@ class StrategyEngine:
             }
             for name, s in self._strategies.items()
         ]
+
+    def enabled_names(self) -> list[str]:
+        return [name for name, s in self._strategies.items() if s.enabled]
 
     def evaluate_all(
         self,
