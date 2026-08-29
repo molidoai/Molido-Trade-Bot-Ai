@@ -1,5 +1,5 @@
 # Molido Trade Bot AI - Docker Compose (live-oriented)
-# DB/Redis ports bound to localhost only. No weak password defaults.
+# DB/Redis/API/frontend ports bound to localhost only. No weak password defaults.
 
 services:
   postgres:
@@ -57,10 +57,11 @@ services:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
       RUNTIME_SETTINGS_PATH: /app/data/runtime-settings.json
+      TRADING_ACCOUNT_MODE: ${TRADING_ACCOUNT_MODE:-DEMO}
     volumes:
       - runtime_data:/app/data
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -84,7 +85,7 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
-      TRADING_ACCOUNT_MODE: REAL
+      TRADING_ACCOUNT_MODE: ${TRADING_ACCOUNT_MODE:-DEMO}
       MASTER_BOT_ENABLED: "true"
       OPS_STATE_URL: http://api:8000/api/v1/ops/state
       RUNTIME_SETTINGS_PATH: /app/data/runtime-settings.json
@@ -110,7 +111,7 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - api
     deploy:
