@@ -18,69 +18,58 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Application
     app_name: str = "Molido Trade Bot AI"
-    app_env: Literal["development", "staging", "production"] = "development"
+    app_env: Literal["development", "staging", "production"] = "production"
     debug: bool = False
     secret_key: str = Field(..., min_length=32)
     api_prefix: str = "/api/v1"
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
 
-    # Database
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     postgres_user: str = "molido"
     postgres_password: str = Field(..., min_length=8)
     postgres_db: str = "molido_trading"
 
-    # Redis
     redis_host: str = "localhost"
     redis_port: int = 6379
     redis_password: str | None = None
     redis_db: int = 0
 
-    # Trading Mode (Safety critical)
-    # DEMO = safe default
-    # PROP = Prop Firm challenge / funded account (strict risk rules)
-    # REAL  = personal live capital (highest risk – requires 2-step confirmation)
-    trading_account_mode: Literal["DEMO", "PROP", "REAL"] = "DEMO"
-    master_bot_enabled: bool = False  # MASTER ON/OFF – default OFF
+    # Live is the intended mode. Operator asked to keep REAL + master ON.
+    trading_account_mode: Literal["DEMO", "PROP", "REAL"] = "REAL"
+    master_bot_enabled: bool = True
 
-    # MT5 DEMO
     mt5_demo_login: int | None = None
     mt5_demo_password: str | None = None
     mt5_demo_server: str | None = None
     mt5_demo_path: str | None = None
 
-    # MT5 PROP (Prop Firm account)
     mt5_prop_login: int | None = None
     mt5_prop_password: str | None = None
     mt5_prop_server: str | None = None
     mt5_prop_path: str | None = None
-    prop_firm_name: str | None = None          # e.g. FTMO, FundedNext
-    prop_phase: str | None = None              # CHALLENGE / VERIFICATION / FUNDED
-    prop_account_size: float | None = None     # e.g. 100000
+    prop_firm_name: str | None = None
+    prop_phase: str | None = None
+    prop_account_size: float | None = None
     prop_max_daily_loss_pct: float = 5.0
     prop_max_total_drawdown_pct: float = 10.0
     prop_profit_target_pct: float | None = None
 
-    # MT5 REAL (leave empty until ready)
     mt5_real_login: int | None = None
     mt5_real_password: str | None = None
     mt5_real_server: str | None = None
     mt5_real_path: str | None = None
 
-    # Telegram
     telegram_bot_token: str | None = None
     telegram_admin_chat_id: str | None = None
     telegram_allowed_chat_ids: str = ""
 
-    # Risk defaults (can be overridden; PROP mode uses stricter values)
     default_risk_per_trade: float = 0.005
     max_daily_loss: float = 0.02
     max_drawdown: float = 0.05
     max_open_positions: int = 5
 
-    # Observability
     prometheus_enabled: bool = True
     log_level: str = "INFO"
 
@@ -117,8 +106,11 @@ class Settings(BaseSettings):
         return self.trading_account_mode == "PROP"
 
     @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
     def effective_max_daily_loss(self) -> float:
-        """PROP accounts use the firm’s daily loss limit if set."""
         if self.is_prop_account and self.prop_max_daily_loss_pct:
             return self.prop_max_daily_loss_pct / 100.0
         return self.max_daily_loss
@@ -131,10 +123,11 @@ class Settings(BaseSettings):
 
     @field_validator("trading_account_mode")
     @classmethod
-    def force_safe_default(cls, v: str) -> str:
-        if v not in ("DEMO", "PROP", "REAL"):
-            return "DEMO"
-        return v
+    def validate_mode(cls, v: str) -> str:
+        mode = (v or "REAL").upper()
+        if mode not in ("DEMO", "PROP", "REAL"):
+            return "REAL"
+        return mode
 
 
 @lru_cache
