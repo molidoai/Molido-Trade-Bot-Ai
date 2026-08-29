@@ -19,6 +19,7 @@ async def lifespan(app: FastAPI):
     print(f"Environment     : {settings.app_env}")
     print(f"Account Mode    : {settings.trading_account_mode}")
     print(f"Master Bot      : {'ON' if settings.master_bot_enabled else 'OFF'}")
+    print(f"Live            : {'YES' if settings.is_real_account and settings.master_bot_enabled else 'NO'}")
     print(f"Debug           : {settings.debug}")
     yield
     print("Shutting down gracefully...")
@@ -31,7 +32,7 @@ app = FastAPI(
         "**Disclaimer**: This software does not guarantee profits "
         "and is not financial advice. Trading involves substantial risk of loss."
     ),
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
     docs_url="/docs" if not settings.is_production else None,
     redoc_url="/redoc" if not settings.is_production else None,
@@ -39,13 +40,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"] if settings.debug else [],
+    allow_origins=settings.cors_origin_list or ["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include API routes
 app.include_router(api_router, prefix=settings.api_prefix)
 
 
@@ -54,7 +54,10 @@ async def root():
     return JSONResponse(
         content={
             "message": f"Welcome to {settings.app_name}",
-            "version": "0.1.0",
+            "version": "0.2.0",
+            "account_mode": settings.trading_account_mode,
+            "master_bot": settings.master_bot_enabled,
+            "live": settings.is_real_account and settings.master_bot_enabled,
             "docs": "/docs" if not settings.is_production else "disabled in production",
             "health": f"{settings.api_prefix}/health",
             "disclaimer": (

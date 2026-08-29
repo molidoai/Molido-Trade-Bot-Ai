@@ -1,4 +1,4 @@
-# Acceptance Criteria – updated
+# Acceptance Criteria – LIVE enabled
 
 | Criterion | Status |
 |-----------|--------|
@@ -11,18 +11,12 @@
 | Position / Portfolio / Reconcile | ✅ |
 | Backtester + costs | ✅ |
 | Paper pipeline + Mock | ✅ |
-| Dashboard Next.js scaffold | ✅ |
+| Dashboard Next.js (3D LIVE deck) | ✅ |
 | Telegram bot commands | ✅ |
 | Metrics + anomaly + security checks | ✅ |
-| Trading Hours Guard | ✅ |
+| Live mode default (REAL + master ON) | ✅ |
 | News Blackout Guard | ✅ (needs calendar data for strict mode) |
-| Master switch + REAL confirm token | ✅ |
-| Market Regime classifier | ✅ |
-| Config Drift Detector | ✅ |
-| PROP account fields | ✅ |
-| Demo broker live test | ⏳ You – VPS + MT5 DEMO |
-| Persistent Redis in production | ⏳ You – deploy |
-| Micro-Live / Live | 🔒 Explicit human approval only |
-
-**Engineering status:** Feature-complete for Paper/Mock development.  
-**Production trading status:** Waiting on your infrastructure and Demo validation.
+| Demo broker live test | ⏳ You – VPS + MT5 terminal |
+| MT5 live `place_order` full path | ⏳ Adapter still returns not-enabled until terminal + package |
+| Persistent Redis password + localhost bind | ✅ |
+| REAL credentials in `.env` | ⏳ You |

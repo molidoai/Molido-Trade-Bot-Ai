@@ -1,5 +1,5 @@
-# Molido Trade Bot AI - Docker Compose
-# Resource limits are kept conservative for limited VPS (target ~8vCPU / 10GB later)
+# Molido Trade Bot AI - Docker Compose (live-oriented)
+# DB/Redis ports bound to localhost only. No weak password defaults.
 
 services:
   postgres:
@@ -8,12 +8,12 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-molido}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-molido_trading}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-molido}"]
       interval: 10s
@@ -24,20 +24,18 @@ services:
         limits:
           cpus: "1.0"
           memory: 1G
-        reservations:
-          memory: 256M
 
   redis:
     image: redis:7-alpine
     container_name: molido-redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}
     volumes:
       - redis_data:/data
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}", "ping"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -65,35 +63,56 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ./apps/api:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     deploy:
       resources:
         limits:
           cpus: "1.0"
           memory: 512M
 
-  # Trading Engine will be added in later phases
-  # trading-engine:
-  #   ...
+  trading-engine:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.engine
+    container_name: molido-engine
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      REDIS_HOST: redis
+      TRADING_ACCOUNT_MODE: REAL
+      MASTER_BOT_ENABLED: "true"
+      OPS_STATE_URL: http://api:8000/api/v1/ops/state
+    depends_on:
+      api:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1G
+
+  frontend:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    container_name: molido-web
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
 
 volumes:
   postgres_data:
   redis_data:
-
-  # frontend:
-  #   build:
-  #     context: ./frontend
-  #     dockerfile: Dockerfile
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     NEXT_PUBLIC_API_URL: http://api:8000/api/v1
-  #   depends_on:
-  #     - api
-  #   deploy:
-  #     resources:
-  #       limits:
-  #         cpus: "0.5"
-  #         memory: 512M

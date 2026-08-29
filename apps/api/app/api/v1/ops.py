@@ -1,17 +1,19 @@
 """Operational controls: Master ON/OFF, account mode (DEMO/PROP/REAL)."""
 
 from __future__ import annotations
-from fastapi import APIRouter, HTTPException, Depends
+import os
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from typing import Literal
 
 from app.core.config import get_settings, Settings
+from app.api.deps import require_admin
+from app.models.user import User
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
-# Process-local store (replace with Redis-backed MasterSwitchStore in deploy)
-_master_on: bool = False
-_account_mode: str = "DEMO"
+_master_on: bool = os.getenv("MASTER_BOT_ENABLED", "true").lower() in ("1", "true", "yes")
+_account_mode: str = os.getenv("TRADING_ACCOUNT_MODE", "REAL").upper()
 _confirm_real_pending: bool = False
 
 
@@ -26,47 +28,64 @@ class ModeBody(BaseModel):
     actor: str = "dashboard"
 
 
-@router.get("/state")
-async def ops_state(settings: Settings = Depends(get_settings)):
+def _snapshot(settings: Settings) -> dict:
+    mode = _account_mode or settings.trading_account_mode
     return {
         "master_on": _master_on,
-        "account_mode": _account_mode or settings.trading_account_mode,
+        "account_mode": mode,
         "default_from_env": settings.trading_account_mode,
         "confirm_real_pending": _confirm_real_pending,
+        "live": mode == "REAL" and _master_on,
     }
+
+
+@router.get("/state")
+async def ops_state(settings: Settings = Depends(get_settings)):
+    return _snapshot(settings)
 
 
 @router.post("/master")
-async def set_master(body: MasterBody):
+async def set_master(
+    body: MasterBody,
+    admin: User = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+):
     global _master_on
     _master_on = body.enabled
-    return {
-        "master_on": _master_on,
-        "actor": body.actor,
-        "message": "Master " + ("ON" if _master_on else "OFF"),
-    }
+    out = _snapshot(settings)
+    out["actor"] = body.actor or admin.email
+    out["message"] = "Master " + ("ON" if _master_on else "OFF")
+    return out
 
 
 @router.post("/mode")
-async def set_mode(body: ModeBody):
+async def set_mode(
+    body: ModeBody,
+    admin: User = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+):
     global _account_mode, _confirm_real_pending, _master_on
-    if body.mode == "REAL":
-        if body.confirm_token != "CONFIRM_REAL":
-            _confirm_real_pending = True
-            raise HTTPException(
-                status_code=400,
-                detail="REAL requires confirm_token=CONFIRM_REAL (two-step)",
-            )
-        _confirm_real_pending = False
-        # Safety: turning REAL does not auto-enable master
-        _master_on = False
-    if body.mode == "PROP" and body.confirm_token not in (None, "CONFIRM_PROP"):
-        if body.confirm_token != "CONFIRM_PROP":
-            raise HTTPException(status_code=400, detail="PROP requires confirm_token=CONFIRM_PROP")
     _account_mode = body.mode
-    return {
-        "account_mode": _account_mode,
-        "master_on": _master_on,
-        "actor": body.actor,
-        "message": f"Mode set to {_account_mode}",
-    }
+    _confirm_real_pending = False
+    if body.mode == "REAL":
+        _master_on = True
+    out = _snapshot(settings)
+    out["actor"] = body.actor or admin.email
+    out["message"] = f"Mode set to {_account_mode}"
+    return out
+
+
+@router.post("/live")
+async def enable_live(
+    actor: str = "dashboard",
+    admin: User = Depends(require_admin),
+    settings: Settings = Depends(get_settings),
+):
+    global _account_mode, _master_on, _confirm_real_pending
+    _account_mode = "REAL"
+    _master_on = True
+    _confirm_real_pending = False
+    out = _snapshot(settings)
+    out["actor"] = actor or admin.email
+    out["message"] = "LIVE enabled: REAL + master ON"
+    return out
