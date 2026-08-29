@@ -1,4 +1,4 @@
-"""Risk domain models."""
+"""Risk domain models. Conservative defaults: small losses, never a profit claim."""
 
 from __future__ import annotations
 from dataclasses import dataclass, field
@@ -15,26 +15,35 @@ class RiskDecision(str, Enum):
 
 @dataclass
 class RiskLimits:
-    """Configurable hard limits. PROP mode overrides daily/drawdown from firm rules."""
-    risk_per_trade: float = 0.005          # 0.5% of equity
-    max_daily_loss: float = 0.02           # 2%
-    max_weekly_loss: float = 0.05          # 5%
-    max_drawdown: float = 0.05             # 5%
-    max_open_positions: int = 5
-    max_portfolio_exposure: float = 0.10   # 10% of equity at risk
-    max_symbol_exposure: float = 0.03      # 3% per symbol
-    max_lot_size: float = 2.0
+    """Hard limits. Sized so a bad week hurts little, not so the bot 'cannot lose'."""
+    risk_per_trade: float = 0.0025         # 0.25% of equity
+    max_daily_loss: float = 0.02           # 2% then circuit
+    max_weekly_loss: float = 0.06          # 6% then circuit
+    max_drawdown: float = 0.04             # 4%
+    max_open_positions: int = 3
+    max_entries_per_day: int = 4
+    max_consecutive_losses: int = 3
+    consecutive_loss_pause_seconds: int = 4 * 3600
+    max_portfolio_exposure: float = 0.05   # 5% of equity at risk
+    max_symbol_exposure: float = 0.015     # 1.5% per symbol
+    max_lot_size: float = 0.50
     min_lot_size: float = 0.01
     lot_step: float = 0.01
     max_leverage: float = 100.0
-    min_risk_reward: float = 1.0
-    max_spread_points: float = 30.0        # reject if spread too wide
-    max_slippage_points: float = 10.0
+    min_risk_reward: float = 1.5
+    max_spread_points: float = 20.0
+    max_slippage_points: float = 8.0
     require_stop_loss: bool = True
-    cooldown_seconds: int = 60
-    # Volatility scaling
-    high_vol_risk_mult: float = 0.5        # cut risk in half in high vol
+    cooldown_seconds: int = 180
+    high_vol_risk_mult: float = 0.25
     extreme_vol_block: bool = True
+    block_correlated: bool = True
+    min_margin_level: float = 300.0
+    min_free_margin_ratio: float = 0.3
+    deny_average_down: bool = True
+    pause_on_negative_journal: bool = True
+    dead_atr_ratio: float = 0.0003
+    atr_vs_stop_max: float = 1.2
 
 
 @dataclass
@@ -45,18 +54,26 @@ class AccountState:
     weekly_pnl: float = 0.0
     peak_equity: float = 0.0
     open_positions: int = 0
-    symbol_exposure: dict[str, float] = field(default_factory=dict)  # symbol → $ at risk
-    portfolio_risk: float = 0.0            # total $ at risk across positions
+    symbol_exposure: dict[str, float] = field(default_factory=dict)
+    portfolio_risk: float = 0.0
     leverage_used: float = 0.0
-    account_mode: str = "DEMO"             # DEMO / PROP / REAL
+    account_mode: str = "DEMO"
     last_trade_at: datetime | None = None
+    consecutive_losses: int = 0
+    entries_today: int = 0
+    open_symbols: list[str] = field(default_factory=list)
+    last_loss_at: datetime | None = None
+    margin_level: float | None = None
+    free_margin: float | None = None
+    margin_used: float | None = None
+    open_side_by_symbol: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
 class RiskContext:
     """Everything Risk Engine needs for one decision."""
     symbol: str
-    side: str                              # BUY / SELL / EXIT
+    side: str
     entry: float | None
     stop_loss: float | None
     take_profit: float | None
@@ -74,7 +91,7 @@ class RiskContext:
 class RiskResult:
     decision: RiskDecision
     lot_size: float = 0.0
-    risk_amount: float = 0.0               # $ risked if SL hit
+    risk_amount: float = 0.0
     reasons: list[str] = field(default_factory=list)
     checks: dict[str, bool] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
