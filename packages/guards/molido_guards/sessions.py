@@ -2,7 +2,8 @@
 
 Hours are in America/New_York so Sunday open and Friday close follow US DST.
 New entries only during London/NY overlap. Weekend, Monday gap, Friday close
-and rollover are blocked.
+and rollover are blocked. Thursday after NY 16:00 blocks new entries so we
+do not hold into Friday weekend swap.
 """
 
 from __future__ import annotations
@@ -70,6 +71,13 @@ class SessionCalendar:
         ny = self.now_ny(now)
         return [w.name for w in FX_SESSIONS if _in_window(ny, w)]
 
+    def should_flatten(self, now: datetime | None = None) -> tuple[bool, str]:
+        """Close opens Friday 16:00 America/New_York."""
+        ny = self.now_ny(now)
+        if ny.weekday() == 4 and ny.time() >= time(16, 0):
+            return True, "Friday after NY 16:00 — flatten open positions"
+        return False, ""
+
     def allow_new_entries(self, now: datetime | None = None) -> tuple[bool, str]:
         ok, why = self.is_fx_week_open(now)
         if not ok:
@@ -79,6 +87,8 @@ class SessionCalendar:
         t = ny.time()
         if wd == 0 and t < time(8, 30):
             return False, "Monday first 30 min NY — gap filter"
+        if wd == 3 and t >= time(16, 0):
+            return False, "Thursday after NY 16:00 — no new entries into Friday weekend swap"
         if wd == 4 and t >= time(16, 0):
             return False, "Friday after NY 16:00 — no new entries"
         if time(16, 45) <= t <= time(17, 15):
