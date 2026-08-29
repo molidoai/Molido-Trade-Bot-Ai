@@ -79,6 +79,8 @@ services:
       dockerfile: infra/docker/Dockerfile.engine
     container_name: molido-engine
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     env_file:
       - .env
     environment:
@@ -87,7 +89,11 @@ services:
       TRADING_ACCOUNT_MODE: DEMO
       MASTER_BOT_ENABLED: "true"
       OPS_STATE_URL: http://api:8000/api/v1/ops/state
+      OPS_HEARTBEAT_URL: http://api:8000/api/v1/ops/heartbeat
       RUNTIME_SETTINGS_PATH: /app/data/runtime-settings.json
+      NEWS_CALENDAR_PATH: /app/data/news_calendar.json
+      MT5_RPC_HOST: ${MT5_RPC_HOST:-host.docker.internal}
+      MT5_RPC_PORT: ${MT5_RPC_PORT:-8001}
     volumes:
       - runtime_data:/app/data
     depends_on:
