@@ -33,3 +33,21 @@ async def test_resume_needs_confirm():
     assert state.master_bot_on is False
     msg = await router.handle("1", "/confirm resume")
     assert state.master_bot_on is True
+
+
+@pytest.mark.asyncio
+async def test_flatten_and_off_admin():
+    called = {"flatten": 0}
+
+    async def on_flatten():
+        called["flatten"] += 1
+
+    state = BotState(master_bot_on=True, on_flatten=on_flatten)
+    router = CommandRouter(state, auth_is_admin=lambda c: c == "admin")
+    msg = await router.handle("other", "/flatten")
+    assert "⛔" in msg or "ادمین" in msg
+    msg = await router.handle("admin", "/flatten")
+    assert "Flatten" in msg or "flatten" in msg.lower()
+    assert called["flatten"] == 1
+    msg = await router.handle("admin", "/off")
+    assert state.master_bot_on is False
