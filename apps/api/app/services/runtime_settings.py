@@ -1,5 +1,5 @@
 """Runtime settings stored on the server, never in git.
-Secrets can be changed from the dashboard."""
+Editable from the dashboard."""
 
 from __future__ import annotations
 import json
@@ -14,10 +14,16 @@ _LOCK = Lock()
 DEFAULTS = {
     "trading_account_mode": "REAL",
     "master_bot_enabled": True,
+    "mt5_login": "",
+    "mt5_password": "",
+    "mt5_server": "",
+    "mt5_path": "",
     "mt5_real_login": "",
     "mt5_real_password": "",
     "mt5_real_server": "",
     "mt5_real_path": "",
+    "symbols": "EURUSD,GBPUSD,XAUUSD",
+    "timeframe": "M15",
     "telegram_bot_token": "",
     "telegram_admin_chat_id": "",
     "telegram_allowed_chat_ids": "",
@@ -28,6 +34,7 @@ DEFAULTS = {
 }
 
 SECRET_KEYS = {
+    "mt5_password",
     "mt5_real_password",
     "telegram_bot_token",
 }
@@ -50,6 +57,14 @@ def load() -> dict:
             data = {}
         out = dict(DEFAULTS)
         out.update({k: v for k, v in data.items() if k in DEFAULTS})
+        if not out.get("mt5_login") and out.get("mt5_real_login"):
+            out["mt5_login"] = out["mt5_real_login"]
+        if not out.get("mt5_password") and out.get("mt5_real_password"):
+            out["mt5_password"] = out["mt5_real_password"]
+        if not out.get("mt5_server") and out.get("mt5_real_server"):
+            out["mt5_server"] = out["mt5_real_server"]
+        if not out.get("mt5_path") and out.get("mt5_real_path"):
+            out["mt5_path"] = out["mt5_real_path"]
         return out
 
 
@@ -61,6 +76,14 @@ def save(data: dict) -> dict:
         if key in SECRET_KEYS and (value is None or value == "" or value == "••••"):
             continue
         current[key] = value
+        if key == "mt5_login":
+            current["mt5_real_login"] = value
+        if key == "mt5_password":
+            current["mt5_real_password"] = value
+        if key == "mt5_server":
+            current["mt5_real_server"] = value
+        if key == "mt5_path":
+            current["mt5_real_path"] = value
     with _LOCK:
         _ensure_parent()
         tmp = _PATH.with_suffix(".tmp")
