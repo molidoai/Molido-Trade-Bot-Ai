@@ -38,6 +38,12 @@ class RiskLimits:
     high_vol_risk_mult: float = 0.25
     extreme_vol_block: bool = True
     block_correlated: bool = True
+    min_margin_level: float = 300.0
+    min_free_margin_ratio: float = 0.3
+    deny_average_down: bool = True
+    pause_on_negative_journal: bool = True
+    dead_atr_ratio: float = 0.0003
+    atr_vs_stop_max: float = 1.2
 
 
 @dataclass
@@ -57,6 +63,10 @@ class AccountState:
     entries_today: int = 0
     open_symbols: list[str] = field(default_factory=list)
     last_loss_at: datetime | None = None
+    margin_level: float | None = None
+    free_margin: float | None = None
+    margin_used: float | None = None
+    open_side_by_symbol: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
