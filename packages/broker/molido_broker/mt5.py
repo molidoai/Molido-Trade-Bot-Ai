@@ -263,15 +263,35 @@ class MT5BrokerAdapter(BrokerAdapter):
     def _send(self, request: dict[str, Any]) -> OrderResult:
         result = mt5.order_send(request)
         if result is None:
-            return OrderResult(success=False, message=str(mt5.last_error()), raw={})
+            err = mt5.last_error()
+            logger.error(
+                "MT5 order_send None last_error=%s comment=%s symbol=%s action=%s",
+                err,
+                request.get("comment"),
+                request.get("symbol"),
+                request.get("action"),
+            )
+            return OrderResult(success=False, message=str(err), raw={"last_error": err})
+        comment = result.comment or ""
+        logger.info(
+            "MT5 order_send retcode=%s comment=%s order=%s deal=%s volume=%s price=%s symbol=%s req_comment=%s",
+            result.retcode,
+            comment,
+            result.order,
+            result.deal,
+            result.volume,
+            result.price,
+            request.get("symbol"),
+            request.get("comment"),
+        )
         ok = result.retcode == mt5.TRADE_RETCODE_DONE
         return OrderResult(
             success=ok,
             broker_order_id=str(result.order or result.deal or ""),
             fill_price=float(result.price or 0) or None,
             filled_volume=float(result.volume or 0),
-            message=result.comment or str(result.retcode),
-            raw={"retcode": result.retcode, "deal": result.deal, "order": result.order},
+            message=f"retcode={result.retcode} comment={comment}",
+            raw={"retcode": result.retcode, "deal": result.deal, "order": result.order, "comment": comment},
         )
 
     async def place_order(self, request: OrderRequest) -> OrderResult:
@@ -322,7 +342,10 @@ class MT5BrokerAdapter(BrokerAdapter):
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": _filling(info),
             }
-            return self._send(payload)
+            logger.info("MT5 place_order payload comment=%s type=%s %s", payload["comment"], request.order_type, request.symbol)
+            res = self._send(payload)
+            logger.info("MT5 place_order result %s", res.message)
+            return res
 
         return await asyncio.to_thread(_place)
 
@@ -331,6 +354,10 @@ class MT5BrokerAdapter(BrokerAdapter):
 
         def _cancel() -> bool:
             res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": int(ticket)})
+            if res is None:
+                logger.error("MT5 cancel None last_error=%s ticket=%s", mt5.last_error(), ticket)
+                return False
+            logger.info("MT5 cancel retcode=%s comment=%s ticket=%s", res.retcode, res.comment, ticket)
             return bool(res and res.retcode == mt5.TRADE_RETCODE_DONE)
 
         return await asyncio.to_thread(_cancel)
@@ -356,6 +383,10 @@ class MT5BrokerAdapter(BrokerAdapter):
                 "tp": float(tp if tp is not None else p.tp),
             }
             res = mt5.order_send(payload)
+            if res is None:
+                logger.error("MT5 modify None last_error=%s ticket=%s", mt5.last_error(), ticket)
+                return False
+            logger.info("MT5 modify retcode=%s comment=%s ticket=%s sl=%s tp=%s", res.retcode, res.comment, ticket, payload["sl"], payload["tp"])
             return bool(res and res.retcode == mt5.TRADE_RETCODE_DONE)
 
         return await asyncio.to_thread(_mod)
@@ -390,7 +421,10 @@ class MT5BrokerAdapter(BrokerAdapter):
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": _filling(info),
             }
-            return self._send(payload)
+            logger.info("MT5 close_position ticket=%s vol=%s comment=%s", ticket, payload["volume"], payload["comment"])
+            res = self._send(payload)
+            logger.info("MT5 close_position result %s", res.message)
+            return res
 
         return await asyncio.to_thread(_close)
 
