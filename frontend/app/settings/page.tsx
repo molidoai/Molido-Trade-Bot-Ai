@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+import { API, getToken } from "@/lib/auth";
 
 type FormState = {
   trading_account_mode: string;
@@ -65,16 +64,12 @@ function Field({
 const inputCls = "w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2";
 
 export default function SettingsPage() {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [token, setToken] = useState("");
   const [form, setForm] = useState<FormState>(empty);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const t = localStorage.getItem("molido_token") || "";
-    setToken(t);
+    const t = getToken();
     if (t) void load(t);
   }, []);
 
@@ -84,7 +79,7 @@ export default function SettingsPage() {
       cache: "no-store",
     });
     if (!r.ok) {
-      setMsg("لاگین لازم است");
+      setMsg("نشست منقضی است. دوباره وارد شو.");
       return;
     }
     const data = await r.json();
@@ -102,44 +97,8 @@ export default function SettingsPage() {
     setMsg("تنظیمات از سرور خوانده شد");
   }
 
-  async function loginOrRegister() {
-    setBusy(true);
-    setMsg("");
-    try {
-      let r = await fetch(`${API}/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      if (r.status === 401) {
-        r = await fetch(`${API}/auth/register`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password, full_name: "Operator" }),
-        });
-        if (r.ok) {
-          r = await fetch(`${API}/auth/login`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email, password }),
-          });
-        }
-      }
-      if (!r.ok) {
-        setMsg("ورود ناموفق");
-        return;
-      }
-      const data = await r.json();
-      const tkn = data.access_token as string;
-      localStorage.setItem("molido_token", tkn);
-      setToken(tkn);
-      await load(tkn);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function save() {
+    const token = getToken();
     if (!token) {
       setMsg("اول وارد شو");
       return;
@@ -172,7 +131,7 @@ export default function SettingsPage() {
         body: JSON.stringify(body),
       });
       if (r.status === 403) {
-        setMsg("فقط ادمین می‌تواند ذخیره کند");
+        setMsg("فقط مالک می‌تواند ذخیره کند");
         return;
       }
       if (!r.ok) {
@@ -200,19 +159,8 @@ export default function SettingsPage() {
     <div className="space-y-6">
       <h2 className="aurora text-3xl font-black">تنظیمات</h2>
       <p className="text-sm text-slate-400">
-        همه مقدارهای لازم را همین‌جا وارد کن. روی سرور ذخیره می‌شود، نه داخل گیت.
+        همه مقدارهای لازم را همین‌جا وارد کن. روی سرور ذخیره می‌شود، نه داخل گیت. ورود جداگانه از صفحه لاگین است.
       </p>
-
-      <div className="glass space-y-3 rounded-2xl p-5">
-        <p className="text-sm text-slate-400">ورود ادمین (اولین ثبت‌نام ادمین می‌شود)</p>
-        <div className="grid gap-3 md:grid-cols-3">
-          <input className={inputCls} placeholder="ایمیل" value={email} onChange={(e) => setEmail(e.target.value)} />
-          <input className={inputCls} placeholder="رمز" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-          <button type="button" disabled={busy} onClick={loginOrRegister} className="rounded-xl bg-cyan-500/20 px-3 py-2 text-cyan-200">
-            ورود / ساخت ادمین
-          </button>
-        </div>
-      </div>
 
       <div className="glass space-y-5 rounded-2xl p-5">
         <div className="flex items-center justify-between gap-4">
@@ -225,8 +173,8 @@ export default function SettingsPage() {
         <Field label="حالت حساب">
           <select className={inputCls} value={form.trading_account_mode} onChange={(e) => set("trading_account_mode", e.target.value)}>
             <option value="DEMO">DEMO</option>
-            <option value="PROP">PROP</option>
             <option value="REAL">REAL (حساب واقعی)</option>
+            <option value="PROP">PROP</option>
           </select>
         </Field>
 
@@ -248,12 +196,12 @@ export default function SettingsPage() {
 
         <p className="pt-1 text-sm font-medium text-slate-300">بازار</p>
         <div className="grid gap-3 md:grid-cols-2">
-          <Field label="نمادها" hint="auto یا خالی = برین از یونیورس انتخاب می‌کند. اختیاری: لیست با کاما.">
+          <Field label="نمادها" hint="خالی یا auto یعنی مغز از یونیورس انتخاب می‌کند ( majores + چند کراس، بدون M1 )">
             <input className={inputCls} value={form.symbols} onChange={(e) => set("symbols", e.target.value)} />
           </Field>
-          <Field label="تایم‌فریم" hint="AUTO = M15 و فیلتر H1؛ M5 فقط در overlap اگر spread خوب باشد. M1 نداریم.">
+          <Field label="تایم‌فریم" hint="AUTO = M15 + فیلتر H1؛ M5 فقط در overlap اگر spread خوب باشد.">
             <select className={inputCls} value={form.timeframe} onChange={(e) => set("timeframe", e.target.value)}>
-              <option value="AUTO">AUTO (brain)</option>
+              <option value="AUTO">AUTO (مغز)</option>
               <option value="M5">M5</option>
               <option value="M15">M15</option>
               <option value="H1">H1</option>
