@@ -21,6 +21,7 @@ class UserResponse(BaseModel):
     role: UserRole
     is_active: bool
     created_at: datetime
+    last_login_at: datetime | None = None
 
     model_config = {"from_attributes": True}
 
@@ -28,3 +29,13 @@ class UserResponse(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    email: str | None = None
+    role: str | None = None
+    full_name: str | None = None
+    last_login_at: datetime | None = None
+    session_ip: str | None = None
+
+
+class BootstrapOut(BaseModel):
+    owner_exists: bool
+    owner_count: int = 0
