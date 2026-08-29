@@ -4,6 +4,7 @@ LIVE trading runner.
 Reads dashboard runtime settings from RUNTIME_SETTINGS_PATH when present,
 then falls back to env. RiskEngine is still mandatory. Session calendar,
 point-in-time bars, quality gate and regime are applied before any order.
+Brain picks symbol/TF from a small universe; never scans every pair x TF.
 """
 
 from __future__ import annotations
@@ -16,40 +17,30 @@ from molido_broker import create_broker, BrokerType
 from molido_shared.types import TimeFrame
 from molido_shared.point_in_time import InsufficientDataError, closed_bars
 from molido_shared.data_quality import score_candles
+from molido_shared.journal import TradeJournal
 from molido_indicators import IndicatorEngine
 from molido_strategies import StrategyEngine
 from molido_signals import SignalEngine
 from molido_risk import RiskEngine, RiskLimits
 from molido_execution import ExecutionEngine
 from molido_portfolio import PositionManager, PortfolioManager, Reconciler
+from molido_portfolio.trade_manager import TradeManager
 from molido_regime import MarketRegimeEngine
 from molido_guards import SessionCalendar
+from molido_brain import (
+    DecisionBrain,
+    h1_side_from_bars,
+    UniversePicker,
+    CheapCandidate,
+    resolve_universe,
+    resolve_trade_timeframe,
+    cheap_score,
+)
 from app.orchestration.pipeline import TradingPipeline
 from app.data.market_data import MarketDataEngine
 from app.live.alerts import notify as telegram_notify
 
 logger = logging.getLogger(__name__)
-
-_TF = {
-    "M1": TimeFrame.M1,
-    "1M": TimeFrame.M1,
-    "1m": TimeFrame.M1,
-    "M5": TimeFrame.M5,
-    "5M": TimeFrame.M5,
-    "5m": TimeFrame.M5,
-    "M15": TimeFrame.M15,
-    "15M": TimeFrame.M15,
-    "15m": TimeFrame.M15,
-    "H1": TimeFrame.H1,
-    "1H": TimeFrame.H1,
-    "1h": TimeFrame.H1,
-    "H4": TimeFrame.H4,
-    "4H": TimeFrame.H4,
-    "4h": TimeFrame.H4,
-    "D1": TimeFrame.D1,
-    "1D": TimeFrame.D1,
-    "1d": TimeFrame.D1,
-}
 
 
 def _load_runtime() -> dict:
@@ -83,21 +74,21 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-def _poll_ops_master(default: bool) -> bool:
+def _poll_ops(default_master: bool) -> tuple[bool, int]:
     url = os.getenv("OPS_STATE_URL", "http://api:8000/api/v1/ops/state")
     try:
         with urllib.request.urlopen(url, timeout=2) as resp:
             data = json.loads(resp.read().decode())
-            return bool(data.get("master_on", default))
+            master = bool(data.get("master_on", default_master))
+            seq = int(data.get("flatten_seq") or 0)
+            return master, seq
     except Exception:
-        logger.debug("ops state poll failed; keeping master=%s", default)
-        return default
+        logger.debug("ops state poll failed; keeping master=%s", default_master)
+        return default_master, 0
 
 
 def _parse_symbols(raw: str) -> list[str]:
-    parts = raw.replace(";", ",").split(",")
-    out = [p.strip().upper() for p in parts if p.strip()]
-    return out or ["EURUSD", "GBPUSD", "XAUUSD"]
+    return resolve_universe(raw)
 
 
 class LiveRunner:
@@ -108,15 +99,17 @@ class LiveRunner:
         cycle_seconds: float = 15.0,
     ):
         rt = _load_runtime()
-        self.symbols = symbols or _parse_symbols(_pick(rt, "symbols") or "EURUSD,GBPUSD,XAUUSD")
-        tf_raw = _pick(rt, "timeframe") or "M15"
-        self.timeframe = timeframe if symbols else _TF.get(tf_raw, _TF.get(tf_raw.upper(), TimeFrame.M15))
+        self.tf_override = _pick(rt, "timeframe") or "AUTO"
+        self.symbols = symbols or resolve_universe(_pick(rt, "symbols") or "auto")
+        self.timeframe = TimeFrame.M15
+        self.picker = UniversePicker()
         self.cycle_seconds = cycle_seconds
-        self.account_mode = (_pick(rt, "trading_account_mode", env="TRADING_ACCOUNT_MODE") or "REAL").upper()
+        self.account_mode = (_pick(rt, "trading_account_mode", env="TRADING_ACCOUNT_MODE") or "DEMO").upper()
         self.master_bot_on = _env_bool("MASTER_BOT_ENABLED", True)
         if "master_bot_enabled" in rt:
             self.master_bot_on = bool(rt.get("master_bot_enabled"))
         self._running = False
+        self._flatten_seen = 0
         self.broker = None
         self.execution = None
         self.positions = None
@@ -124,8 +117,11 @@ class LiveRunner:
         self.reconciler = None
         self.pipeline = None
         self.market_data = None
+        self.trade_manager = None
         self.regime = MarketRegimeEngine()
         self.calendar = SessionCalendar()
+        self.journal = TradeJournal()
+        self.brain = DecisionBrain()
 
         self.indicators = IndicatorEngine()
         self.indicators.add_from_registry("MultiEMA")
@@ -138,8 +134,6 @@ class LiveRunner:
 
         self.strategies = StrategyEngine()
         self.strategies.add_from_registry("TrendFollowing")
-        self.strategies.add_from_registry("DonchianBreakout")
-        self.strategies.add_from_registry("RSIMeanReversion")
 
         self.signals = SignalEngine(accept_threshold=55.0)
         self.risk = RiskEngine(self._limits_from(rt))
@@ -152,22 +146,22 @@ class LiveRunner:
                 return default
 
         try:
-            max_pos = int(rt.get("max_open_positions", 5))
+            max_pos = int(rt.get("max_open_positions", 3))
         except (TypeError, ValueError):
-            max_pos = 5
+            max_pos = 3
         return RiskLimits(
-            risk_per_trade=num("default_risk_per_trade", 0.005),
+            risk_per_trade=num("default_risk_per_trade", 0.0025),
             max_daily_loss=num("max_daily_loss", 0.02),
-            max_drawdown=num("max_drawdown", 0.05),
+            max_drawdown=num("max_drawdown", 0.04),
             max_open_positions=max(1, max_pos),
         )
 
     def _apply_runtime(self, rt: dict) -> None:
         mode = (_pick(rt, "trading_account_mode", env="TRADING_ACCOUNT_MODE") or self.account_mode).upper()
         self.account_mode = mode
-        self.symbols = _parse_symbols(_pick(rt, "symbols") or ",".join(self.symbols))
-        tf_raw = _pick(rt, "timeframe") or "M15"
-        self.timeframe = _TF.get(tf_raw, _TF.get(tf_raw.upper(), self.timeframe))
+        self.tf_override = _pick(rt, "timeframe") or "AUTO"
+        self.symbols = resolve_universe(_pick(rt, "symbols") or "auto")
+        self.timeframe = TimeFrame.M15
         if "master_bot_enabled" in rt:
             self.master_bot_on = bool(rt.get("master_bot_enabled"))
         self.risk.limits = self._limits_from(rt)
@@ -203,6 +197,7 @@ class LiveRunner:
         self.positions = PositionManager(self.broker)
         self.portfolio = PortfolioManager(self.broker, self.positions, account_mode=self.account_mode)
         self.reconciler = Reconciler(self.broker, self.positions)
+        self.trade_manager = TradeManager(self.broker, self.positions)
         self.pipeline = TradingPipeline(
             indicator_engine=self.indicators,
             strategy_engine=self.strategies,
@@ -213,6 +208,8 @@ class LiveRunner:
             portfolio_manager=self.portfolio,
             reconciler=self.reconciler,
             account_mode=self.account_mode,
+            brain=self.brain,
+            journal=self.journal,
         )
         self.market_data = MarketDataEngine(
             broker=self.broker,
@@ -268,11 +265,37 @@ class LiveRunner:
     async def _cycle(self) -> None:
         rt = _load_runtime()
         self._apply_runtime(rt)
-        self.master_bot_on = _poll_ops_master(self.master_bot_on)
+        self.master_bot_on, flatten_seq = _poll_ops(self.master_bot_on)
+
+        if flatten_seq > self._flatten_seen and self.trade_manager is not None:
+            self._flatten_seen = flatten_seq
+            acts = await self.trade_manager.flatten_all("ops flatten")
+            for a in acts:
+                self.journal.append("flatten", reason="ops flatten", detail=a)
+            telegram_notify("Molido flatten-all requested")
+
+        flat_ok, flat_why = self.calendar.should_flatten()
+        if flat_ok and self.trade_manager is not None and self.positions and self.positions.count() > 0:
+            acts = await self.trade_manager.flatten_all(flat_why)
+            for a in acts:
+                self.journal.append("flatten", reason=flat_why, detail=a)
+            telegram_notify(f"Molido flatten: {flat_why}")
+
+        # Manage open positions only (do not scan the whole universe here)
+        open_syms = []
+        if self.positions is not None:
+            open_syms = list({p.symbol for p in self.positions.get_all()})
+        for symbol in open_syms:
+            try:
+                await self._manage_open(symbol)
+            except Exception:
+                logger.exception("manage error on %s", symbol)
+
         sess_ok, sess_why = self.calendar.allow_new_entries()
         if not sess_ok:
             logger.info("LIVE session skip: %s", sess_why)
             return
+
         snap = await self.portfolio.snapshot()
         logger.info(
             "LIVE equity=%.2f | positions=%d | DD=%.2f%% | master=%s | sessions=%s",
@@ -282,49 +305,185 @@ class LiveRunner:
             "ON" if self.master_bot_on else "OFF",
             ",".join(self.calendar.active_sessions()) or "-",
         )
-        for symbol in self.symbols:
+
+        stats = self.journal.journal_stats(20)
+        if stats and stats["n"] >= 20 and stats["mean_r"] < 0 and self.brain.pause_on_negative_journal:
+            logger.info("LIVE pause new entries: journal mean R=%.3f n=%s", stats["mean_r"], stats["n"])
+            return
+
+        overlap = "London_NY_Overlap" in self.calendar.active_sessions()
+        picks = await self._pick_symbols(open_syms, overlap=overlap, session_ok=True)
+        logger.info(
+            "LIVE picker %s",
+            ",".join(f"{c.symbol}:{c.score:.2f}" for c in picks) or "(none)",
+        )
+        for cand in picks:
+            symbol = cand.symbol
+            trade_tf = resolve_trade_timeframe(
+                self.tf_override,
+                overlap=overlap,
+                spread_ok=cand.spread_ok,
+            )
             try:
-                raw = await self.market_data.get_candles(symbol, self.timeframe, count=160)
-                if not raw:
-                    continue
-                try:
-                    candles = closed_bars(raw, min_bars=30)
-                except InsufficientDataError as exc:
-                    logger.debug("%s PIT: %s", symbol, exc)
-                    continue
-                quality = score_candles(candles)
-                if not quality.tradeable:
-                    logger.warning("%s quality block score=%.2f %s", symbol, quality.score, quality.findings[:3])
-                    continue
-                ind = self.indicators.compute_latest(candles)
-                regime = self.regime.classify(candles, ind)
-                result = await self.pipeline.on_candles(
-                    symbol=symbol,
-                    timeframe=self.timeframe,
-                    candles=candles,
-                    regime=regime,
-                    master_bot_on=self.master_bot_on,
+                await self._evaluate_symbol(
+                    symbol,
+                    trade_tf,
+                    h1_side=cand.h1_side,
+                    overlap=overlap,
+                    tick_spread=cand.spread,
                 )
-                if result.skipped_reason:
-                    logger.debug("%s skipped: %s", symbol, result.skipped_reason)
-                    continue
-                if result.exec_result and result.exec_result.success:
-                    side = result.signal.side.value if result.signal else "?"
-                    logger.info(
-                        "%s LIVE FILL %s %.2f lots @ %s | regime=%s",
-                        symbol,
-                        side,
-                        result.lot_size,
-                        result.exec_result.fill_price,
-                        regime,
-                    )
-                    telegram_notify(
-                        f"Molido FILL {symbol} {side} {result.lot_size} @ {result.exec_result.fill_price} regime={regime}"
-                    )
-                elif result.exec_result and not result.exec_result.success:
-                    logger.warning("%s exec failed: %s", symbol, result.exec_result.message)
             except Exception:
                 logger.exception("LIVE cycle error on %s", symbol)
+
+    async def _pick_symbols(self, open_syms: list[str], *, overlap: bool, session_ok: bool) -> list:
+        """Cheap scan of the universe, then brain rank. At most 1-2 new symbols."""
+        ticks = {}
+        spread_order = []
+        for symbol in self.symbols:
+            tick = None
+            try:
+                tick = await self.market_data.get_latest_tick(symbol)
+                if tick is None:
+                    tick = await self.broker.get_tick(symbol)
+            except Exception:
+                tick = None
+            ticks[symbol] = tick
+            if tick is not None:
+                rel = tick.spread / tick.mid if tick.mid else 9
+                spread_order.append((rel, symbol))
+        spread_order.sort()
+        h1_targets = self.picker.h1_budget([s for _, s in spread_order])
+        h1_map: dict[str, str | None] = {}
+        for symbol in h1_targets:
+            try:
+                h1_raw = await self.market_data.get_candles(symbol, TimeFrame.H1, count=80, use_cache=True)
+                h1_bars = closed_bars(h1_raw, min_bars=30)
+                h1_map[symbol] = h1_side_from_bars(h1_bars)
+            except (InsufficientDataError, Exception):
+                h1_map[symbol] = None
+
+        rows: list[CheapCandidate] = []
+        for symbol in self.symbols:
+            tick = ticks.get(symbol)
+            spread = tick.spread if tick is not None else None
+            mid = tick.mid if tick is not None else None
+            score, reasons, spread_ok = cheap_score(
+                session_ok=session_ok,
+                overlap=overlap,
+                spread=spread,
+                mid=mid,
+                h1_side=h1_map.get(symbol),
+            )
+            rows.append(
+                CheapCandidate(
+                    symbol=symbol,
+                    score=score,
+                    spread=spread,
+                    mid=mid,
+                    h1_side=h1_map.get(symbol),
+                    spread_ok=spread_ok,
+                    reasons=reasons,
+                )
+            )
+        ranked = self.brain.rank_universe(self.picker.rank(rows))
+        return self.picker.select(ranked, open_syms)
+
+    async def _evaluate_symbol(
+        self,
+        symbol: str,
+        trade_tf: TimeFrame,
+        *,
+        h1_side: str | None,
+        overlap: bool,
+        tick_spread: float | None,
+    ) -> None:
+        raw = await self.market_data.get_candles(symbol, trade_tf, count=160, use_cache=False)
+        if not raw:
+            return
+        try:
+            candles = closed_bars(raw, min_bars=30)
+        except InsufficientDataError as exc:
+            logger.debug("%s PIT: %s", symbol, exc)
+            return
+        quality = score_candles(candles)
+        if not quality.tradeable:
+            logger.warning("%s quality block score=%.2f %s", symbol, quality.score, quality.findings[:3])
+            return
+        ind = self.indicators.compute_latest(candles)
+        regime = self.regime.classify(candles, ind)
+        tick = await self.market_data.get_latest_tick(symbol)
+        if tick is None:
+            tick = await self.broker.get_tick(symbol)
+        spread = tick.spread if tick is not None else tick_spread
+        result = await self.pipeline.on_candles(
+            symbol=symbol,
+            timeframe=trade_tf,
+            candles=candles,
+            regime=regime,
+            master_bot_on=self.master_bot_on,
+            h1_side=h1_side,
+            spread=spread,
+            tick=tick,
+            overlap=overlap,
+        )
+        if result.skipped_reason:
+            logger.debug("%s skipped: %s", symbol, result.skipped_reason)
+            return
+        if result.exec_result and result.exec_result.success:
+            side = result.signal.side.value if result.signal else "?"
+            logger.info(
+                "%s LIVE FILL %s %.2f lots @ %s | tf=%s | regime=%s",
+                symbol,
+                side,
+                result.lot_size,
+                result.exec_result.fill_price,
+                trade_tf.value,
+                regime,
+            )
+            telegram_notify(
+                f"Molido FILL {symbol} {side} {result.lot_size} @ {result.exec_result.fill_price} tf={trade_tf.value} regime={regime}"
+            )
+        elif result.exec_result and not result.exec_result.success:
+            logger.warning("%s exec failed: %s", symbol, result.exec_result.message)
+
+    async def _manage_open(self, symbol: str) -> None:
+        if self.trade_manager is None or self.positions is None:
+            return
+        if self.positions.by_symbol(symbol) == []:
+            return
+        raw = await self.market_data.get_candles(symbol, self.timeframe, count=40)
+        try:
+            candles = closed_bars(raw, min_bars=8) if raw else []
+        except InsufficientDataError:
+            candles = []
+        atr = None
+        price = None
+        if candles:
+            ind = self.indicators.compute_latest(candles)
+            atr_res = ind.get("ATR") or ind.get("atr14")
+            if atr_res:
+                atr = atr_res.get("atr")
+            price = candles[-1].close
+        tick = await self.market_data.get_latest_tick(symbol)
+        if tick is not None:
+            price = tick.mid
+        for pos in self.positions.by_symbol(symbol):
+            st = self.trade_manager._st(pos)
+            self.journal.update_mae_mfe(
+                pos.ticket,
+                price=price,
+                entry=pos.entry_price,
+                side=pos.side,
+                stop_distance=st.get("stop_dist"),
+            )
+        await self.trade_manager.manage_symbol(
+            symbol,
+            candles=candles,
+            atr=atr,
+            timeframe=self.timeframe,
+            price=price,
+        )
+        await self.positions.sync_from_broker()
 
 
 async def main() -> None:
