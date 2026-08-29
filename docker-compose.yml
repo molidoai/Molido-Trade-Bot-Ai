@@ -83,6 +83,7 @@ services:
       REDIS_HOST: redis
       TRADING_ACCOUNT_MODE: REAL
       MASTER_BOT_ENABLED: "true"
+      OPS_STATE_URL: http://api:8000/api/v1/ops/state
     depends_on:
       api:
         condition: service_started

@@ -7,8 +7,10 @@ Requires MT5_REAL_LOGIN / MT5_REAL_PASSWORD / MT5_REAL_SERVER.
 
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import os
+import urllib.request
 from molido_broker import create_broker, BrokerType
 from molido_shared.types import TimeFrame
 from molido_indicators import IndicatorEngine
@@ -36,6 +38,17 @@ def _env_int(name: str) -> int | None:
 def _env_bool(name: str, default: bool = True) -> bool:
     raw = os.getenv(name, "true" if default else "false").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+def _poll_ops_master(default: bool) -> bool:
+    url = os.getenv("OPS_STATE_URL", "http://api:8000/api/v1/ops/state")
+    try:
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            data = json.loads(resp.read().decode())
+            return bool(data.get("master_on", default))
+    except Exception:
+        logger.debug("ops state poll failed; keeping master=%s", default)
+        return default
 
 
 class LiveRunner:
@@ -142,6 +155,7 @@ class LiveRunner:
         logger.info("Master bot → %s", "ON" if on else "OFF")
 
     async def _cycle(self) -> None:
+        self.master_bot_on = _poll_ops_master(self.master_bot_on)
         snap = await self.portfolio.snapshot()
         logger.info(
             "LIVE equity=%.2f | positions=%d | DD=%.2f%% | master=%s",
