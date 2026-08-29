@@ -1,12 +1,9 @@
 """
 MetaTrader 5 Broker Adapter.
 
-IMPORTANT:
-- The official MetaTrader5 Python package requires a running MT5 terminal.
-- On Ubuntu servers without GUI this usually means running MT5 under Wine
-  or using a Windows VPS / remote terminal.
-- This module is written so that the rest of the system only depends on
-  the abstract BrokerAdapter interface.
+Official MetaTrader5 package needs a running terminal (Windows or Wine).
+Trading Engine only talks to BrokerAdapter — never to MT5 directly.
+Stop-loss is mandatory on every new order.
 """
 
 from __future__ import annotations
@@ -32,7 +29,6 @@ from molido_broker.base import BrokerAdapter
 
 logger = logging.getLogger(__name__)
 
-# Try to import the official package – may not be available in all environments
 try:
     import MetaTrader5 as mt5
     MT5_AVAILABLE = True
@@ -40,23 +36,30 @@ except ImportError:
     mt5 = None  # type: ignore
     MT5_AVAILABLE = False
 
-
 _TF_MAP = {
-    TimeFrame.M1: 1,      # mt5.TIMEFRAME_M1
+    TimeFrame.M1: 1,
     TimeFrame.M5: 5,
     TimeFrame.M15: 15,
-    TimeFrame.H1: 16385,  # mt5.TIMEFRAME_H1
+    TimeFrame.H1: 16385,
     TimeFrame.H4: 16388,
     TimeFrame.D1: 16408,
 }
 
+MAGIC = 908029
+
+
+def _filling(info: Any) -> int:
+    if not MT5_AVAILABLE:
+        return 1
+    mode = int(getattr(info, "filling_mode", 0) or 0)
+    if mode & 1:
+        return mt5.ORDER_FILLING_FOK
+    if mode & 2:
+        return mt5.ORDER_FILLING_IOC
+    return mt5.ORDER_FILLING_RETURN
+
 
 class MT5BrokerAdapter(BrokerAdapter):
-    """
-    Production adapter for MetaTrader 5.
-    Falls back to clear errors if the MetaTrader5 package or terminal is missing.
-    """
-
     def __init__(
         self,
         login: int | None = None,
@@ -122,7 +125,7 @@ class MT5BrokerAdapter(BrokerAdapter):
             currency=info.currency,
             leverage=info.leverage,
             trade_allowed=info.trade_allowed,
-            account_type="DEMO" if info.trade_mode == 0 else "REAL",  # approximate
+            account_type="DEMO" if info.trade_mode == 0 else "REAL",
         )
 
     async def get_symbol_info(self, symbol: str) -> SymbolInfo | None:
@@ -178,9 +181,7 @@ class MT5BrokerAdapter(BrokerAdapter):
     ) -> list[Candle]:
         self._ensure_connected()
         tf = _TF_MAP.get(timeframe, 15)
-        rates = await asyncio.to_thread(
-            mt5.copy_rates_from_pos, symbol, tf, 0, count
-        )
+        rates = await asyncio.to_thread(mt5.copy_rates_from_pos, symbol, tf, 0, count)
         if rates is None:
             return []
         candles: list[Candle] = []
@@ -202,10 +203,6 @@ class MT5BrokerAdapter(BrokerAdapter):
         return candles
 
     async def stream_ticks(self, symbols: list[str]) -> AsyncIterator[Tick]:
-        """
-        Simple polling-based tick stream.
-        For production a more efficient subscription can be added later.
-        """
         self._ensure_connected()
         while await self.is_connected():
             for symbol in symbols:
@@ -246,23 +243,97 @@ class MT5BrokerAdapter(BrokerAdapter):
         orders = await asyncio.to_thread(mt5.orders_get)
         if orders is None:
             return []
-        # Mapping can be expanded later
-        return []
+        out: list[BrokerOrder] = []
+        for o in orders:
+            out.append(
+                BrokerOrder(
+                    ticket=o.ticket,
+                    symbol=o.symbol,
+                    side=Side.BUY if o.type in (0, 2, 4) else Side.SELL,
+                    order_type=OrderType.LIMIT,
+                    volume=o.volume_current,
+                    price_open=o.price_open,
+                    sl=o.sl or None,
+                    tp=o.tp or None,
+                    status="PENDING",
+                )
+            )
+        return out
+
+    def _send(self, request: dict[str, Any]) -> OrderResult:
+        result = mt5.order_send(request)
+        if result is None:
+            return OrderResult(success=False, message=str(mt5.last_error()), raw={})
+        ok = result.retcode == mt5.TRADE_RETCODE_DONE
+        return OrderResult(
+            success=ok,
+            broker_order_id=str(result.order or result.deal or ""),
+            fill_price=float(result.price or 0) or None,
+            filled_volume=float(result.volume or 0),
+            message=result.comment or str(result.retcode),
+            raw={"retcode": result.retcode, "deal": result.deal, "order": result.order},
+        )
 
     async def place_order(self, request: OrderRequest) -> OrderResult:
         self._ensure_connected()
-        # Full implementation of order_send with type, deviation, magic, etc.
-        # will be completed when real terminal credentials are available.
-        logger.warning("place_order called but full MT5 order path not yet activated")
-        return OrderResult(
-            success=False,
-            client_order_id=request.client_order_id,
-            message="MT5 live order execution not yet enabled in this phase",
-        )
+        if not MT5_AVAILABLE:
+            return OrderResult(success=False, client_order_id=request.client_order_id, message="MetaTrader5 not installed")
+        if not request.sl:
+            return OrderResult(
+                success=False,
+                client_order_id=request.client_order_id,
+                message="stop loss is mandatory",
+            )
+
+        def _place() -> OrderResult:
+            info = mt5.symbol_info(request.symbol)
+            if info is None:
+                return OrderResult(success=False, message=f"unknown symbol {request.symbol}")
+            if not info.visible:
+                mt5.symbol_select(request.symbol, True)
+                info = mt5.symbol_info(request.symbol)
+            tick = mt5.symbol_info_tick(request.symbol)
+            if tick is None:
+                return OrderResult(success=False, message="no tick")
+            is_buy = request.side == Side.BUY or str(request.side).upper() == "BUY"
+            if request.order_type == OrderType.MARKET or request.order_type is None:
+                action = mt5.TRADE_ACTION_DEAL
+                order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
+                price = tick.ask if is_buy else tick.bid
+            elif request.order_type == OrderType.LIMIT:
+                action = mt5.TRADE_ACTION_PENDING
+                order_type = mt5.ORDER_TYPE_BUY_LIMIT if is_buy else mt5.ORDER_TYPE_SELL_LIMIT
+                price = float(request.price or 0)
+            else:
+                action = mt5.TRADE_ACTION_PENDING
+                order_type = mt5.ORDER_TYPE_BUY_STOP if is_buy else mt5.ORDER_TYPE_SELL_STOP
+                price = float(request.price or 0)
+            payload = {
+                "action": action,
+                "symbol": request.symbol,
+                "volume": float(request.volume),
+                "type": order_type,
+                "price": float(price),
+                "sl": float(request.sl),
+                "tp": float(request.tp or 0),
+                "deviation": 30,
+                "magic": int(request.magic or MAGIC),
+                "comment": (request.comment or "molido")[:31],
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": _filling(info),
+            }
+            return self._send(payload)
+
+        return await asyncio.to_thread(_place)
 
     async def cancel_order(self, ticket: str | int) -> bool:
         self._ensure_connected()
-        return False
+
+        def _cancel() -> bool:
+            res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": int(ticket)})
+            return bool(res and res.retcode == mt5.TRADE_RETCODE_DONE)
+
+        return await asyncio.to_thread(_cancel)
 
     async def modify_position(
         self,
@@ -271,7 +342,23 @@ class MT5BrokerAdapter(BrokerAdapter):
         tp: float | None = None,
     ) -> bool:
         self._ensure_connected()
-        return False
+
+        def _mod() -> bool:
+            positions = mt5.positions_get(ticket=int(ticket))
+            if not positions:
+                return False
+            p = positions[0]
+            payload = {
+                "action": mt5.TRADE_ACTION_SLTP,
+                "position": int(ticket),
+                "symbol": p.symbol,
+                "sl": float(sl if sl is not None else p.sl),
+                "tp": float(tp if tp is not None else p.tp),
+            }
+            res = mt5.order_send(payload)
+            return bool(res and res.retcode == mt5.TRADE_RETCODE_DONE)
+
+        return await asyncio.to_thread(_mod)
 
     async def close_position(
         self,
@@ -279,7 +366,33 @@ class MT5BrokerAdapter(BrokerAdapter):
         volume: float | None = None,
     ) -> OrderResult:
         self._ensure_connected()
-        return OrderResult(success=False, message="Not implemented yet")
+
+        def _close() -> OrderResult:
+            positions = mt5.positions_get(ticket=int(ticket))
+            if not positions:
+                return OrderResult(success=False, message="position not found")
+            p = positions[0]
+            tick = mt5.symbol_info_tick(p.symbol)
+            if tick is None:
+                return OrderResult(success=False, message="no tick")
+            info = mt5.symbol_info(p.symbol)
+            is_buy = p.type == 0
+            payload = {
+                "action": mt5.TRADE_ACTION_DEAL,
+                "symbol": p.symbol,
+                "volume": float(volume or p.volume),
+                "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
+                "position": int(p.ticket),
+                "price": tick.bid if is_buy else tick.ask,
+                "deviation": 30,
+                "magic": int(p.magic or MAGIC),
+                "comment": "molido-close",
+                "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": _filling(info),
+            }
+            return self._send(payload)
+
+        return await asyncio.to_thread(_close)
 
     def _ensure_connected(self) -> None:
         if not self._connected:
