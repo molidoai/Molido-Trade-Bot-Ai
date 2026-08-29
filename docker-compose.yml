@@ -87,6 +87,9 @@ services:
       TRADING_ACCOUNT_MODE: REAL
       MASTER_BOT_ENABLED: "true"
       OPS_STATE_URL: http://api:8000/api/v1/ops/state
+      RUNTIME_SETTINGS_PATH: /app/data/runtime-settings.json
+    volumes:
+      - runtime_data:/app/data
     depends_on:
       api:
         condition: service_started

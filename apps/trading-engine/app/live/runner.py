@@ -1,8 +1,8 @@
 """
 LIVE trading runner.
 
-REAL account + MT5. RiskEngine is still mandatory.
-Requires MT5_REAL_LOGIN / MT5_REAL_PASSWORD / MT5_REAL_SERVER.
+Reads dashboard runtime settings from RUNTIME_SETTINGS_PATH when present,
+then falls back to env. RiskEngine is still mandatory.
 """
 
 from __future__ import annotations
@@ -24,15 +24,52 @@ from app.data.market_data import MarketDataEngine
 
 logger = logging.getLogger(__name__)
 
+_TF = {
+    "M1": TimeFrame.M1,
+    "1M": TimeFrame.M1,
+    "1m": TimeFrame.M1,
+    "M5": TimeFrame.M5,
+    "5M": TimeFrame.M5,
+    "5m": TimeFrame.M5,
+    "M15": TimeFrame.M15,
+    "15M": TimeFrame.M15,
+    "15m": TimeFrame.M15,
+    "H1": TimeFrame.H1,
+    "1H": TimeFrame.H1,
+    "1h": TimeFrame.H1,
+    "H4": TimeFrame.H4,
+    "4H": TimeFrame.H4,
+    "4h": TimeFrame.H4,
+    "D1": TimeFrame.D1,
+    "1D": TimeFrame.D1,
+    "1d": TimeFrame.D1,
+}
 
-def _env_int(name: str) -> int | None:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return None
+
+def _load_runtime() -> dict:
+    path = os.getenv("RUNTIME_SETTINGS_PATH", "/app/data/runtime-settings.json")
     try:
-        return int(raw)
-    except ValueError:
-        return None
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logger.exception("runtime settings unreadable: %s", path)
+        return {}
+
+
+def _pick(rt: dict, *keys: str, env: str | None = None) -> str:
+    for key in keys:
+        val = rt.get(key)
+        if val is None:
+            continue
+        text = str(val).strip()
+        if text and text != "••••":
+            return text
+    if env:
+        return (os.getenv(env) or "").strip()
+    return ""
 
 
 def _env_bool(name: str, default: bool = True) -> bool:
@@ -51,6 +88,12 @@ def _poll_ops_master(default: bool) -> bool:
         return default
 
 
+def _parse_symbols(raw: str) -> list[str]:
+    parts = raw.replace(";", ",").split(",")
+    out = [p.strip().upper() for p in parts if p.strip()]
+    return out or ["EURUSD", "GBPUSD", "XAUUSD"]
+
+
 class LiveRunner:
     def __init__(
         self,
@@ -58,30 +101,23 @@ class LiveRunner:
         timeframe: TimeFrame = TimeFrame.M15,
         cycle_seconds: float = 15.0,
     ):
-        self.symbols = symbols or ["EURUSD", "GBPUSD", "XAUUSD"]
-        self.timeframe = timeframe
+        rt = _load_runtime()
+        self.symbols = symbols or _parse_symbols(_pick(rt, "symbols") or "EURUSD,GBPUSD,XAUUSD")
+        tf_raw = _pick(rt, "timeframe") or "M15"
+        self.timeframe = timeframe if symbols else _TF.get(tf_raw, _TF.get(tf_raw.upper(), TimeFrame.M15))
         self.cycle_seconds = cycle_seconds
-        self.account_mode = os.getenv("TRADING_ACCOUNT_MODE", "REAL").upper() or "REAL"
+        self.account_mode = (_pick(rt, "trading_account_mode", env="TRADING_ACCOUNT_MODE") or "REAL").upper()
         self.master_bot_on = _env_bool("MASTER_BOT_ENABLED", True)
+        if "master_bot_enabled" in rt:
+            self.master_bot_on = bool(rt.get("master_bot_enabled"))
         self._running = False
-
-        login = _env_int("MT5_REAL_LOGIN")
-        password = os.getenv("MT5_REAL_PASSWORD") or None
-        server = os.getenv("MT5_REAL_SERVER") or None
-        path = os.getenv("MT5_REAL_PATH") or None
-
-        if not login or not password or not server:
-            raise RuntimeError(
-                "LIVE requires MT5_REAL_LOGIN, MT5_REAL_PASSWORD, MT5_REAL_SERVER in .env"
-            )
-
-        self.broker = create_broker(
-            BrokerType.MT5,
-            login=login,
-            password=password,
-            server=server,
-            path=path,
-        )
+        self.broker = None
+        self.execution = None
+        self.positions = None
+        self.portfolio = None
+        self.reconciler = None
+        self.pipeline = None
+        self.market_data = None
 
         self.indicators = IndicatorEngine()
         self.indicators.add_from_registry("MultiEMA")
@@ -98,12 +134,67 @@ class LiveRunner:
         self.strategies.add_from_registry("RSIMeanReversion")
 
         self.signals = SignalEngine(accept_threshold=55.0)
-        self.risk = RiskEngine(RiskLimits(risk_per_trade=0.005, max_open_positions=3))
+        self.risk = RiskEngine(self._limits_from(rt))
+
+    def _limits_from(self, rt: dict) -> RiskLimits:
+        def num(key: str, default: float) -> float:
+            try:
+                return float(rt.get(key, default))
+            except (TypeError, ValueError):
+                return default
+
+        try:
+            max_pos = int(rt.get("max_open_positions", 5))
+        except (TypeError, ValueError):
+            max_pos = 5
+        return RiskLimits(
+            risk_per_trade=num("default_risk_per_trade", 0.005),
+            max_daily_loss=num("max_daily_loss", 0.02),
+            max_drawdown=num("max_drawdown", 0.05),
+            max_open_positions=max(1, max_pos),
+        )
+
+    def _apply_runtime(self, rt: dict) -> None:
+        mode = (_pick(rt, "trading_account_mode", env="TRADING_ACCOUNT_MODE") or self.account_mode).upper()
+        self.account_mode = mode
+        self.symbols = _parse_symbols(_pick(rt, "symbols") or ",".join(self.symbols))
+        tf_raw = _pick(rt, "timeframe") or "M15"
+        self.timeframe = _TF.get(tf_raw, _TF.get(tf_raw.upper(), self.timeframe))
+        if "master_bot_enabled" in rt:
+            self.master_bot_on = bool(rt.get("master_bot_enabled"))
+        self.risk.limits = self._limits_from(rt)
+        if self.pipeline is not None:
+            self.pipeline.account_mode = mode
+        if self.portfolio is not None:
+            self.portfolio.account_mode = mode
+        if self.market_data is not None:
+            self.market_data.symbols = self.symbols
+
+    def _mt5_creds(self, rt: dict) -> tuple[int | None, str, str, str | None]:
+        login_raw = _pick(rt, "mt5_login", "mt5_real_login", env="MT5_REAL_LOGIN")
+        password = _pick(rt, "mt5_password", "mt5_real_password", env="MT5_REAL_PASSWORD")
+        server = _pick(rt, "mt5_server", "mt5_real_server", env="MT5_REAL_SERVER")
+        path = _pick(rt, "mt5_path", "mt5_real_path", env="MT5_REAL_PATH") or None
+        login: int | None = None
+        if login_raw:
+            try:
+                login = int(login_raw)
+            except ValueError:
+                logger.error("MT5 login must be a number")
+        return login, password, server, path
+
+    def _bind_broker(self, login: int, password: str, server: str, path: str | None) -> None:
+        self.broker = create_broker(
+            BrokerType.MT5,
+            login=login,
+            password=password,
+            server=server,
+            path=path,
+        )
         self.execution = ExecutionEngine(self.broker)
         self.positions = PositionManager(self.broker)
         self.portfolio = PortfolioManager(self.broker, self.positions, account_mode=self.account_mode)
         self.reconciler = Reconciler(self.broker, self.positions)
-
         self.pipeline = TradingPipeline(
             indicator_engine=self.indicators,
             strategy_engine=self.strategies,
@@ -115,7 +206,6 @@ class LiveRunner:
             reconciler=self.reconciler,
             account_mode=self.account_mode,
         )
-
         self.market_data = MarketDataEngine(
             broker=self.broker,
             symbols=self.symbols,
@@ -123,6 +213,17 @@ class LiveRunner:
         )
 
     async def start(self) -> None:
+        logger.info("LIVE runner waiting for MT5 credentials (dashboard Settings or env)")
+        while True:
+            rt = _load_runtime()
+            self._apply_runtime(rt)
+            login, password, server, path = self._mt5_creds(rt)
+            if login and password and server:
+                self._bind_broker(login, password, server, path)
+                break
+            logger.warning("MT5 login/password/server not set yet; retrying in 10s")
+            await asyncio.sleep(10)
+
         logger.info(
             "LIVE runner starting | mode=%s | master=%s | symbols=%s",
             self.account_mode,
@@ -132,7 +233,7 @@ class LiveRunner:
         ok = await self.broker.connect()
         if not ok:
             raise RuntimeError(
-                "LIVE MT5 connect failed. Need a running MT5 terminal (Windows or Wine) plus valid REAL credentials."
+                "LIVE MT5 connect failed. Need a running MT5 terminal (Windows or Wine) plus valid credentials."
             )
         await self.reconciler.reconcile()
         await self.market_data.start()
@@ -146,8 +247,10 @@ class LiveRunner:
 
     async def stop(self) -> None:
         self._running = False
-        await self.market_data.stop()
-        await self.broker.disconnect()
+        if self.market_data is not None:
+            await self.market_data.stop()
+        if self.broker is not None:
+            await self.broker.disconnect()
         logger.info("LIVE runner stopped")
 
     def set_master(self, on: bool) -> None:
@@ -155,6 +258,8 @@ class LiveRunner:
         logger.info("Master bot → %s", "ON" if on else "OFF")
 
     async def _cycle(self) -> None:
+        rt = _load_runtime()
+        self._apply_runtime(rt)
         self.master_bot_on = _poll_ops_master(self.master_bot_on)
         snap = await self.portfolio.snapshot()
         logger.info(
