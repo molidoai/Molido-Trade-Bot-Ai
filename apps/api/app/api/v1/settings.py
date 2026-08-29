@@ -1,4 +1,4 @@
-"""Admin-editable runtime settings (MT5, telegram, risk, live mode)."""
+"""Admin-editable runtime settings from the dashboard."""
 
 from __future__ import annotations
 from typing import Any, Literal
@@ -15,10 +15,16 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 class SettingsPatch(BaseModel):
     trading_account_mode: Literal["DEMO", "PROP", "REAL"] | None = None
     master_bot_enabled: bool | None = None
+    mt5_login: str | None = None
+    mt5_password: str | None = None
+    mt5_server: str | None = None
+    mt5_path: str | None = None
     mt5_real_login: str | None = None
     mt5_real_password: str | None = None
     mt5_real_server: str | None = None
     mt5_real_path: str | None = None
+    symbols: str | None = None
+    timeframe: str | None = None
     telegram_bot_token: str | None = None
     telegram_admin_chat_id: str | None = None
     telegram_allowed_chat_ids: str | None = None
