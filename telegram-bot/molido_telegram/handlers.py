@@ -172,7 +172,7 @@ class CommandRouter:
 
     async def _pause(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "admin only."
+            return "⛔ admin only."
         self.state.master_bot_on = False
         if self.state.on_pause:
             await self.state.on_pause()
@@ -181,7 +181,7 @@ class CommandRouter:
 
     async def _off(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "admin only."
+            return "⛔ admin only."
         self.state.master_bot_on = False
         if self.state.on_pause:
             await self.state.on_pause()
@@ -191,7 +191,7 @@ class CommandRouter:
 
     async def _flatten(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "admin only."
+            return "⛔ admin only."
         if self.state.on_flatten:
             await self.state.on_flatten()
         ok, detail = await _ops_post("/ops/flatten", {"actor": "telegram /flatten", "reason": "telegram"})
@@ -200,19 +200,19 @@ class CommandRouter:
 
     async def _resume(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "admin only."
+            return "⛔ admin only."
         self._pending_confirm[chat_id] = "resume"
         return "to resume type:\n<code>/confirm resume</code>"
 
     async def _stop(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "admin only."
+            return "⛔ admin only."
         self._pending_confirm[chat_id] = "stop"
         return "Master off. confirm:\n<code>/confirm stop</code>"
 
     async def _confirm(self, chat_id: str, action: str) -> str:
         if not self.is_admin(chat_id):
-            return "admin only."
+            return "⛔ admin only."
         expected = self._pending_confirm.get(chat_id)
         if expected != action:
             return "confirm invalid or expired."
