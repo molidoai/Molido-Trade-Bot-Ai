@@ -2,7 +2,8 @@
 LIVE trading runner.
 
 Reads dashboard runtime settings from RUNTIME_SETTINGS_PATH when present,
-then falls back to env. RiskEngine is still mandatory.
+then falls back to env. RiskEngine is still mandatory. Session calendar,
+point-in-time bars, quality gate and regime are applied before any order.
 """
 
 from __future__ import annotations
@@ -13,14 +14,19 @@ import os
 import urllib.request
 from molido_broker import create_broker, BrokerType
 from molido_shared.types import TimeFrame
+from molido_shared.point_in_time import InsufficientDataError, closed_bars
+from molido_shared.data_quality import score_candles
 from molido_indicators import IndicatorEngine
 from molido_strategies import StrategyEngine
 from molido_signals import SignalEngine
 from molido_risk import RiskEngine, RiskLimits
 from molido_execution import ExecutionEngine
 from molido_portfolio import PositionManager, PortfolioManager, Reconciler
+from molido_regime import MarketRegimeEngine
+from molido_guards import SessionCalendar
 from app.orchestration.pipeline import TradingPipeline
 from app.data.market_data import MarketDataEngine
+from app.live.alerts import notify as telegram_notify
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +124,8 @@ class LiveRunner:
         self.reconciler = None
         self.pipeline = None
         self.market_data = None
+        self.regime = MarketRegimeEngine()
+        self.calendar = SessionCalendar()
 
         self.indicators = IndicatorEngine()
         self.indicators.add_from_registry("MultiEMA")
@@ -261,36 +269,57 @@ class LiveRunner:
         rt = _load_runtime()
         self._apply_runtime(rt)
         self.master_bot_on = _poll_ops_master(self.master_bot_on)
+        sess_ok, sess_why = self.calendar.allow_new_entries()
+        if not sess_ok:
+            logger.info("LIVE session skip: %s", sess_why)
+            return
         snap = await self.portfolio.snapshot()
         logger.info(
-            "LIVE equity=%.2f | positions=%d | DD=%.2f%% | master=%s",
+            "LIVE equity=%.2f | positions=%d | DD=%.2f%% | master=%s | sessions=%s",
             snap.equity,
             snap.open_positions,
             snap.drawdown_pct,
             "ON" if self.master_bot_on else "OFF",
+            ",".join(self.calendar.active_sessions()) or "-",
         )
         for symbol in self.symbols:
             try:
-                candles = await self.market_data.get_candles(symbol, self.timeframe, count=150)
-                if not candles:
+                raw = await self.market_data.get_candles(symbol, self.timeframe, count=160)
+                if not raw:
                     continue
+                try:
+                    candles = closed_bars(raw, min_bars=30)
+                except InsufficientDataError as exc:
+                    logger.debug("%s PIT: %s", symbol, exc)
+                    continue
+                quality = score_candles(candles)
+                if not quality.tradeable:
+                    logger.warning("%s quality block score=%.2f %s", symbol, quality.score, quality.findings[:3])
+                    continue
+                ind = self.indicators.compute_latest(candles)
+                regime = self.regime.classify(candles, ind)
                 result = await self.pipeline.on_candles(
                     symbol=symbol,
                     timeframe=self.timeframe,
                     candles=candles,
-                    regime=None,
+                    regime=regime,
                     master_bot_on=self.master_bot_on,
                 )
                 if result.skipped_reason:
                     logger.debug("%s skipped: %s", symbol, result.skipped_reason)
                     continue
                 if result.exec_result and result.exec_result.success:
+                    side = result.signal.side.value if result.signal else "?"
                     logger.info(
-                        "%s LIVE FILL %s %.2f lots @ %s",
+                        "%s LIVE FILL %s %.2f lots @ %s | regime=%s",
                         symbol,
-                        result.signal.side.value if result.signal else "?",
+                        side,
                         result.lot_size,
                         result.exec_result.fill_price,
+                        regime,
+                    )
+                    telegram_notify(
+                        f"Molido FILL {symbol} {side} {result.lot_size} @ {result.exec_result.fill_price} regime={regime}"
                     )
                 elif result.exec_result and not result.exec_result.success:
                     logger.warning("%s exec failed: %s", symbol, result.exec_result.message)
