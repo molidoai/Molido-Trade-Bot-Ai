@@ -1,0 +1,19 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY apps/trading-engine/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+COPY packages /packages
+COPY apps/trading-engine/app /app/app
+
+ENV PYTHONPATH=/packages/shared:/packages/broker:/packages/indicators:/packages/strategies:/packages/signals:/packages/risk:/packages/execution:/packages/portfolio:/packages/guards:/packages/regime:/packages/anomaly:/packages/observability:/packages/security:/packages/backtester:/app
+ENV TRADING_ACCOUNT_MODE=REAL
+ENV MASTER_BOT_ENABLED=true
+
+CMD ["python", "-m", "app.live.runner"]
