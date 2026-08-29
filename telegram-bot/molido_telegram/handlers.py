@@ -2,10 +2,16 @@
 Command handlers (Master Prompt §31).
 
 Commands: /start /status /balance /positions /pnl /risk /pause /resume /stop
+/flatten /off
 Sensitive ops require admin + confirmation pattern where needed.
+
+Telegram /flatten and /off call POST /api/v1/ops/flatten and
+POST /api/v1/ops/master {"on": false} when MOLIDO_API_URL + MOLIDO_API_TOKEN
+(admin JWT) are set. Otherwise they use BotState callbacks if the engine wired them.
 """
 
 from __future__ import annotations
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
 
@@ -21,10 +27,29 @@ class BotState:
     daily_pnl: float = 0.0
     circuit_open: bool = False
     last_message: str = ""
-    # Optional callbacks wired by Trading Engine later
     on_pause: Callable[[], Awaitable[None]] | None = None
     on_resume: Callable[[], Awaitable[None]] | None = None
+    on_flatten: Callable[[], Awaitable[None]] | None = None
     get_status: Callable[[], Awaitable[dict[str, Any]]] | None = None
+
+
+async def _ops_post(path: str, body: dict) -> tuple[bool, str]:
+    """Call API ops routes. Telegram bot should set MOLIDO_API_URL and MOLIDO_API_TOKEN."""
+    base = (os.getenv("MOLIDO_API_URL") or os.getenv("OPS_API_URL") or "").rstrip("/")
+    token = os.getenv("MOLIDO_API_TOKEN") or ""
+    if not base:
+        return False, "MOLIDO_API_URL not set"
+    url = f"{base}{path}"
+    headers = {"Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(url, json=body, headers=headers)
+            return r.is_success, r.text[:400]
+    except Exception as exc:
+        return False, str(exc)
 
 
 class CommandRouter:
@@ -42,7 +67,6 @@ class CommandRouter:
         cmd = parts[0].split("@")[0].lower()
         args = parts[1:]
 
-        # Confirmation flow for sensitive actions
         if cmd == "/confirm" and args:
             return await self._confirm(chat_id, args[0])
 
@@ -57,6 +81,8 @@ class CommandRouter:
             "/pause": self._pause,
             "/resume": self._resume,
             "/stop": self._stop,
+            "/off": self._off,
+            "/flatten": self._flatten,
             "/mode": self._mode,
         }
         fn = handlers.get(cmd)
@@ -78,6 +104,11 @@ class CommandRouter:
             "/pause — توقف ورود جدید\n"
             "/resume — ازسرگیری (نیاز تأیید)\n"
             "/stop — خاموش کردن Master (نیاز تأیید)\n"
+            "/off — Master OFF فوری (ادمین)\n"
+            "/flatten — بستن همه پوزیشن‌ها (ادمین)\n"
+            "\n"
+            "API: POST /api/v1/ops/flatten و POST /api/v1/ops/master {on:false}\n"
+            "ربات تلگرام این‌ها را با MOLIDO_API_URL + MOLIDO_API_TOKEN صدا می‌زند.\n"
             "\n"
             "⚠️ هیچ تضمین سودی وجود ندارد.\n"
             f"حالت فعلی: <b>{self.state.account_mode}</b> | "
@@ -145,7 +176,27 @@ class CommandRouter:
         self.state.master_bot_on = False
         if self.state.on_pause:
             await self.state.on_pause()
+        await _ops_post("/ops/master", {"on": False, "actor": "telegram"})
         return "⏸ ورود جدید متوقف شد (Master OFF). پوزیشن‌های باز همچنان مدیریت می‌شوند."
+
+    async def _off(self, chat_id: str, args: list[str], user: str) -> str:
+        if not self.is_admin(chat_id):
+            return "⛔ فقط ادمین."
+        self.state.master_bot_on = False
+        if self.state.on_pause:
+            await self.state.on_pause()
+        ok, detail = await _ops_post("/ops/master", {"on": False, "actor": "telegram /off"})
+        extra = " API OK" if ok else f" API: {detail}"
+        return "⏹ Master OFF." + extra
+
+    async def _flatten(self, chat_id: str, args: list[str], user: str) -> str:
+        if not self.is_admin(chat_id):
+            return "⛔ فقط ادمین."
+        if self.state.on_flatten:
+            await self.state.on_flatten()
+        ok, detail = await _ops_post("/ops/flatten", {"actor": "telegram /flatten", "reason": "telegram"})
+        extra = " API OK" if ok else f" API: {detail}"
+        return "Flatten requested (close all opens)." + extra
 
     async def _resume(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
@@ -170,10 +221,12 @@ class CommandRouter:
             self.state.master_bot_on = True
             if self.state.on_resume:
                 await self.state.on_resume()
+            await _ops_post("/ops/master", {"on": True, "actor": "telegram"})
             return "▶️ Master Bot روشن شد."
         if action == "stop":
             self.state.master_bot_on = False
             if self.state.on_pause:
                 await self.state.on_pause()
+            await _ops_post("/ops/master", {"on": False, "actor": "telegram"})
             return "⏹ Master Bot خاموش شد."
         return "اقدام ناشناخته."
