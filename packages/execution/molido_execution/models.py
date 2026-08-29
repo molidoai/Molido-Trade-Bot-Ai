@@ -22,11 +22,15 @@ class ExecStatus(str, Enum):
 
 @dataclass
 class ExecRequest:
-    """Intent to execute after Risk Engine approval."""
+    """Intent to execute after Risk Engine approval.
+
+    New entries default to LIMIT (buy at bid, sell at ask). MARKET is for
+    flatten/close/time-stop/partial only.
+    """
     symbol: str
     side: str                          # BUY / SELL / EXIT
     volume: float
-    order_type: str = "MARKET"         # MARKET / LIMIT / STOP
+    order_type: str = "LIMIT"          # LIMIT for entries; MARKET for closes
     price: float | None = None
     stop_loss: float | None = None
     take_profit: float | None = None

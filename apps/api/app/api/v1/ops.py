@@ -1,7 +1,13 @@
-"""Operational controls: Master ON/OFF, account mode (DEMO/PROP/REAL), flatten."""
+"""Operational controls: Master ON/OFF, flatten, engine heartbeat.
+
+Telegram for /flatten, /off (master off), and stale heartbeat is sent only
+when telegram_bot_token + chat id exist in runtime-settings.json.
+Token is never written to git and never logged.
+"""
 
 from __future__ import annotations
 import os
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Literal
@@ -9,6 +15,7 @@ from typing import Literal
 from app.core.config import get_settings, Settings
 from app.api.deps import require_admin
 from app.models.user import User
+from app.services.ops_notify import notify as telegram_notify
 
 router = APIRouter(prefix="/ops", tags=["ops"])
 
@@ -16,6 +23,9 @@ _master_on: bool = os.getenv("MASTER_BOT_ENABLED", "true").lower() in ("1", "tru
 _account_mode: str = os.getenv("TRADING_ACCOUNT_MODE", "DEMO").upper()
 _confirm_real_pending: bool = False
 _flatten_seq: int = 0
+_engine_pulse_at: datetime | None = None
+_stale_notified: bool = False
+HEARTBEAT_STALE_SEC = 90.0
 
 
 class MasterBody(BaseModel):
@@ -42,8 +52,40 @@ class FlattenBody(BaseModel):
     reason: str = "dashboard flatten"
 
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _stale_seconds(now: datetime | None = None) -> float | None:
+    if _engine_pulse_at is None:
+        return None
+    now = now or _now()
+    return (now - _engine_pulse_at).total_seconds()
+
+
+def _engine_alive(now: datetime | None = None) -> bool:
+    age = _stale_seconds(now)
+    return age is not None and age <= HEARTBEAT_STALE_SEC
+
+
+def _maybe_notify_dead() -> None:
+    global _stale_notified
+    if _engine_alive():
+        _stale_notified = False
+        return
+    if _stale_notified:
+        return
+    age = _stale_seconds()
+    telegram_notify(
+        f"Molido engine heartbeat dead (stale {int(age) if age is not None else 'never'}s, threshold {int(HEARTBEAT_STALE_SEC)}s)"
+    )
+    _stale_notified = True
+
+
 def _snapshot(settings: Settings) -> dict:
     mode = _account_mode or settings.trading_account_mode
+    age = _stale_seconds()
+    alive = _engine_alive()
     return {
         "master_on": _master_on,
         "account_mode": mode,
@@ -51,12 +93,38 @@ def _snapshot(settings: Settings) -> dict:
         "confirm_real_pending": _confirm_real_pending,
         "live": mode == "REAL" and _master_on,
         "flatten_seq": _flatten_seq,
+        "engine_pulse_at": _engine_pulse_at.isoformat() if _engine_pulse_at else None,
+        "engine_alive": alive,
+        "engine_stale_seconds": round(age, 1) if age is not None else None,
+        "engine_stale_threshold_seconds": HEARTBEAT_STALE_SEC,
     }
 
 
 @router.get("/state")
 async def ops_state(settings: Settings = Depends(get_settings)):
+    _maybe_notify_dead()
     return _snapshot(settings)
+
+
+@router.get("/heartbeat")
+async def get_heartbeat(settings: Settings = Depends(get_settings)):
+    _maybe_notify_dead()
+    out = _snapshot(settings)
+    out["message"] = "engine alive" if out["engine_alive"] else "engine dead or never pulsed"
+    return out
+
+
+@router.post("/heartbeat")
+async def post_heartbeat():
+    """Engine pulse. Internal docker network; no token in git."""
+    global _engine_pulse_at, _stale_notified
+    _engine_pulse_at = _now()
+    _stale_notified = False
+    return {
+        "ok": True,
+        "engine_pulse_at": _engine_pulse_at.isoformat(),
+        "engine_alive": True,
+    }
 
 
 @router.post("/master")
@@ -73,6 +141,8 @@ async def set_master(
     out = _snapshot(settings)
     out["actor"] = body.actor or admin.email
     out["message"] = "Master " + ("ON" if _master_on else "OFF")
+    if not _master_on:
+        telegram_notify("Molido master OFF")
     return out
 
 
@@ -86,10 +156,12 @@ async def flatten_all(
     global _flatten_seq
     _flatten_seq += 1
     actor = (body.actor if body else None) or admin.email
+    reason = body.reason if body else "dashboard flatten"
     out = _snapshot(settings)
     out["actor"] = actor
     out["message"] = "flatten requested"
-    out["reason"] = body.reason if body else "dashboard flatten"
+    out["reason"] = reason
+    telegram_notify(f"Molido flatten requested ({reason})")
     return out
 
 

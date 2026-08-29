@@ -29,6 +29,7 @@ async def test_market_order_idempotent():
     assert r1.status == ExecStatus.FILLED
     assert r2.client_order_id == r1.client_order_id
     assert r2.broker_order_id == r1.broker_order_id  # idempotent
+    assert req.order_type == "LIMIT"
 
     positions = await broker.get_positions()
     assert len(positions) == 1
@@ -45,6 +46,7 @@ async def test_reject_wide_spread():
         symbol="EURUSD",
         side="BUY",
         volume=0.1,
+        stop_loss=1.07,
         client_order_id=str(uuid.uuid4()),
     )
     result = await engine.execute(req)
@@ -61,6 +63,7 @@ async def test_close_position():
 
     open_req = ExecRequest(
         symbol="EURUSD", side="BUY", volume=0.1,
+        stop_loss=1.07,
         client_order_id=str(uuid.uuid4()),
     )
     opened = await engine.execute(open_req)

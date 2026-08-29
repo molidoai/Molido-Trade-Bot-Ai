@@ -1,29 +1,18 @@
 """
 Execution Engine (Master Prompt §15).
 
-Responsibilities:
-- Translate approved risk decisions into broker orders
-- Idempotency via client_order_id
-- Duplicate prevention
-- Safe retry (only when safe)
-- Slippage / spread protection at send time
-- Never bypass Risk – this layer only runs AFTER Risk ALLOW/REDUCE
+New entries: LIMIT at bid (buy) / ask (sell) with mandatory SL.
+MARKET only for flatten / close / time-stop / partial (close_position path).
+Never bypass Risk – this layer only runs AFTER Risk ALLOW/REDUCE.
 """
 
 from __future__ import annotations
 import asyncio
 import logging
-from datetime import datetime, timezone
-from typing import Callable, Awaitable
-
-from molido_shared.types import (
-    OrderRequest,
-    OrderResult,
-    OrderType,
-    Side,
-)
+from molido_shared.types import OrderRequest, OrderResult, OrderType, Side
 from molido_broker.base import BrokerAdapter
 from molido_execution.models import ExecRequest, ExecResult, ExecStatus
+from molido_execution.limit_entry import entry_limit_price, is_exit_side
 
 logger = logging.getLogger(__name__)
 
@@ -42,41 +31,45 @@ class ExecutionEngine:
         self.max_spread_points = max_spread_points
         self.order_timeout_sec = order_timeout_sec
         self.max_retries = max_retries
-        # Idempotency store: client_order_id → ExecResult
         self._submitted: dict[str, ExecResult] = {}
         self._lock = asyncio.Lock()
 
     async def execute(self, req: ExecRequest) -> ExecResult:
-        """
-        Main entry. Guarantees at-most-once submission per client_order_id.
-        """
         async with self._lock:
-            # Idempotency: if we already processed this id, return cached result
             if req.client_order_id in self._submitted:
                 logger.info("Idempotent hit for %s", req.client_order_id)
                 return self._submitted[req.client_order_id]
 
-            # Pre-trade spread check
+            if is_exit_side(req.side, req.reduce_only):
+                result = await self._close(req)
+                self._submitted[req.client_order_id] = result
+                return result
+
+            if not req.stop_loss:
+                result = ExecResult(
+                    success=False, status=ExecStatus.REJECTED,
+                    client_order_id=req.client_order_id,
+                    message="stop loss is mandatory", requested_volume=req.volume,
+                )
+                self._submitted[req.client_order_id] = result
+                return result
+
             tick = await self.broker.get_tick(req.symbol)
             if tick is None:
                 result = ExecResult(
-                    success=False,
-                    status=ExecStatus.REJECTED,
+                    success=False, status=ExecStatus.REJECTED,
                     client_order_id=req.client_order_id,
-                    message=f"No tick for {req.symbol}",
-                    requested_volume=req.volume,
+                    message=f"No tick for {req.symbol}", requested_volume=req.volume,
                 )
                 self._submitted[req.client_order_id] = result
                 return result
 
             spread = tick.spread
-            # Approximate points
             point = 0.0001 if tick.mid < 50 else 0.01
             spread_points = spread / point if point else 0
             if spread_points > self.max_spread_points:
                 result = ExecResult(
-                    success=False,
-                    status=ExecStatus.REJECTED,
+                    success=False, status=ExecStatus.REJECTED,
                     client_order_id=req.client_order_id,
                     message=f"Spread {spread_points:.1f} > max {self.max_spread_points}",
                     requested_volume=req.volume,
@@ -84,65 +77,49 @@ class ExecutionEngine:
                 self._submitted[req.client_order_id] = result
                 return result
 
-            # EXIT / close path
-            if req.side == "EXIT" or req.reduce_only:
-                result = await self._close(req)
+            limit_px = entry_limit_price(req.side, tick)
+            if limit_px is None:
+                result = ExecResult(
+                    success=False, status=ExecStatus.REJECTED,
+                    client_order_id=req.client_order_id,
+                    message="No bid/ask for LIMIT entry", requested_volume=req.volume,
+                )
                 self._submitted[req.client_order_id] = result
                 return result
-
-            # New entry
-            result = await self._place_with_retry(req, tick.ask if req.side == "BUY" else tick.bid)
+            req.order_type = "LIMIT"
+            req.price = limit_px
+            result = await self._place_with_retry(req, limit_px)
             self._submitted[req.client_order_id] = result
             return result
 
     async def _place_with_retry(self, req: ExecRequest, ref_price: float) -> ExecResult:
         last_err = ""
-        for attempt in range(1, self.max_retries + 2):  # initial + retries
+        for attempt in range(1, self.max_retries + 2):
             try:
                 side = Side.BUY if req.side.upper() == "BUY" else Side.SELL
-                otype = {
-                    "MARKET": OrderType.MARKET,
-                    "LIMIT": OrderType.LIMIT,
-                    "STOP": OrderType.STOP,
-                }.get(req.order_type.upper(), OrderType.MARKET)
-
+                otype = OrderType.LIMIT
+                if str(req.order_type or "").upper() == "STOP":
+                    otype = OrderType.STOP
                 broker_req = OrderRequest(
-                    symbol=req.symbol,
-                    side=side,
-                    order_type=otype,
-                    volume=req.volume,
-                    price=req.price,
-                    sl=req.stop_loss,
-                    tp=req.take_profit,
+                    symbol=req.symbol, side=side, order_type=otype, volume=req.volume,
+                    price=req.price, sl=req.stop_loss, tp=req.take_profit,
                     client_order_id=req.client_order_id,
-                    comment=req.comment or f"{req.strategy or 'molido'}",
-                    magic=req.magic,
+                    comment=req.comment or f"{req.strategy or 'molido'}", magic=req.magic,
                 )
-
-                # Timeout wrapper
                 broker_res: OrderResult = await asyncio.wait_for(
-                    self.broker.place_order(broker_req),
-                    timeout=self.order_timeout_sec,
+                    self.broker.place_order(broker_req), timeout=self.order_timeout_sec,
                 )
-
                 if not broker_res.success:
                     last_err = broker_res.message or "Broker rejected"
-                    # Only retry on transient messages
                     if not self._is_retryable(last_err) or attempt > self.max_retries:
                         return ExecResult(
-                            success=False,
-                            status=ExecStatus.REJECTED,
+                            success=False, status=ExecStatus.REJECTED,
                             client_order_id=req.client_order_id,
                             broker_order_id=broker_res.broker_order_id,
-                            message=last_err,
-                            requested_volume=req.volume,
-                            raw=broker_res.raw,
+                            message=last_err, requested_volume=req.volume, raw=broker_res.raw,
                         )
                     await asyncio.sleep(0.5 * attempt)
                     continue
-
-                # Slippage check
-                fill = broker_res.fill_price if hasattr(broker_res, "fills_price") else broker_res.fill_price
                 fill = broker_res.fill_price
                 slippage = None
                 if fill is not None and ref_price:
@@ -150,39 +127,21 @@ class ExecutionEngine:
                     point = 0.0001 if ref_price < 50 else 0.01
                     slip_pts = slippage / point if point else 0
                     if slip_pts > self.max_slippage_points:
-                        logger.warning(
-                            "High slippage %.1f points on %s (still filled)",
-                            slip_pts, req.client_order_id,
-                        )
-
+                        logger.warning("High slippage %.1f points on %s (still filled)", slip_pts, req.client_order_id)
                 status = ExecStatus.FILLED
                 if broker_res.filled_volume < req.volume * 0.999:
                     status = ExecStatus.PARTIAL
-
                 return ExecResult(
-                    success=True,
-                    status=status,
-                    client_order_id=req.client_order_id,
-                    broker_order_id=broker_res.broker_order_id,
-                    fill_price=fill,
-                    filled_volume=broker_res.filled_volume,
-                    requested_volume=req.volume,
-                    slippage=slippage,
-                    message=broker_res.message or "OK",
-                    raw=broker_res.raw,
+                    success=True, status=status, client_order_id=req.client_order_id,
+                    broker_order_id=broker_res.broker_order_id, fill_price=fill,
+                    filled_volume=broker_res.filled_volume, requested_volume=req.volume,
+                    slippage=slippage, message=broker_res.message or "OK", raw=broker_res.raw,
                 )
-
             except asyncio.TimeoutError:
-                last_err = "Order timeout"
-                logger.error("Timeout on %s attempt %s", req.client_order_id, attempt)
-                # After timeout we do NOT blindly retry (risk of duplicate)
-                # Mark UNKNOWN so reconciliation can resolve
                 return ExecResult(
-                    success=False,
-                    status=ExecStatus.UNKNOWN,
+                    success=False, status=ExecStatus.UNKNOWN,
                     client_order_id=req.client_order_id,
-                    message="Timeout – requires reconciliation",
-                    requested_volume=req.volume,
+                    message="Timeout – requires reconciliation", requested_volume=req.volume,
                 )
             except Exception as e:
                 last_err = str(e)
@@ -190,23 +149,18 @@ class ExecutionEngine:
                 if attempt > self.max_retries:
                     break
                 await asyncio.sleep(0.5 * attempt)
-
         return ExecResult(
-            success=False,
-            status=ExecStatus.FAILED,
+            success=False, status=ExecStatus.FAILED,
             client_order_id=req.client_order_id,
-            message=last_err or "Execution failed",
-            requested_volume=req.volume,
+            message=last_err or "Execution failed", requested_volume=req.volume,
         )
 
     async def _close(self, req: ExecRequest) -> ExecResult:
         if req.position_ticket is None:
             return ExecResult(
-                success=False,
-                status=ExecStatus.REJECTED,
+                success=False, status=ExecStatus.REJECTED,
                 client_order_id=req.client_order_id,
-                message="EXIT requires position_ticket",
-                requested_volume=req.volume,
+                message="EXIT requires position_ticket", requested_volume=req.volume,
             )
         try:
             broker_res = await asyncio.wait_for(
@@ -215,38 +169,28 @@ class ExecutionEngine:
             )
             if not broker_res.success:
                 return ExecResult(
-                    success=False,
-                    status=ExecStatus.REJECTED,
+                    success=False, status=ExecStatus.REJECTED,
                     client_order_id=req.client_order_id,
                     broker_order_id=broker_res.broker_order_id,
-                    message=broker_res.message,
-                    requested_volume=req.volume,
+                    message=broker_res.message, requested_volume=req.volume,
                 )
             return ExecResult(
-                success=True,
-                status=ExecStatus.FILLED,
+                success=True, status=ExecStatus.FILLED,
                 client_order_id=req.client_order_id,
                 broker_order_id=broker_res.broker_order_id,
-                fill_price=broker_res.fill_price,
-                filled_volume=broker_res.filled_volume,
-                requested_volume=req.volume,
-                message=broker_res.message or "Closed",
+                fill_price=broker_res.fill_price, filled_volume=broker_res.filled_volume,
+                requested_volume=req.volume, message=broker_res.message or "Closed",
             )
         except asyncio.TimeoutError:
             return ExecResult(
-                success=False,
-                status=ExecStatus.UNKNOWN,
+                success=False, status=ExecStatus.UNKNOWN,
                 client_order_id=req.client_order_id,
-                message="Close timeout – requires reconciliation",
-                requested_volume=req.volume,
+                message="Close timeout – requires reconciliation", requested_volume=req.volume,
             )
         except Exception as e:
             return ExecResult(
-                success=False,
-                status=ExecStatus.FAILED,
-                client_order_id=req.client_order_id,
-                message=str(e),
-                requested_volume=req.volume,
+                success=False, status=ExecStatus.FAILED,
+                client_order_id=req.client_order_id, message=str(e), requested_volume=req.volume,
             )
 
     async def cancel(self, client_order_id: str, broker_ticket: str | int | None = None) -> bool:

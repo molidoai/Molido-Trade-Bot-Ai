@@ -35,6 +35,7 @@ DEFAULTS = {
     "max_drawdown": 0.04,
     "max_open_positions": 3,
     "max_entries_per_day": 4,
+    "strategy_names": ["TrendFollowing"],
 }
 
 SECRET_KEYS = {

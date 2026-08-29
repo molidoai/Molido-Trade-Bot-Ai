@@ -1,7 +1,7 @@
 """
-Core trading pipeline (Master Prompt section 52):
+Core trading pipeline (Master Prompt §52):
 
-  Strategy -> Signal -> Brain -> Risk -> Execution -> Broker
+  Strategy → Signal → Brain → Risk → Execution → Broker
 
 This module wires all engines together. Used by Paper, Demo and Live loops.
 Nothing here bypasses RiskEngine. The brain may only veto, never enlarge size.
@@ -27,6 +27,14 @@ try:
 except ImportError:
     TradingHoursGuard = NewsBlackoutGuard = MarketRegimeEngine = None  # type: ignore
     correlated_block = None  # type: ignore
+try:
+    from molido_execution.limit_entry import entry_limit_price
+except ImportError:
+    entry_limit_price = None  # type: ignore
+try:
+    from molido_brain.swap import overnight_swap_r
+except ImportError:
+    overnight_swap_r = None  # type: ignore
 try:
     from molido_brain import DecisionBrain
 except ImportError:
@@ -62,6 +70,7 @@ class TradingPipeline:
         risk_limits: RiskLimits | None = None,
         brain: object | None = None,
         journal: object | None = None,
+        news_guard: object | None = None,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -72,10 +81,9 @@ class TradingPipeline:
         self.portfolio = portfolio_manager
         self.reconciler = reconciler
         self.account_mode = account_mode
-        # Stale copy kept only for callers that still pass risk_limits;
-        # evaluate() uses self.risk.limits.
         self.risk_limits = risk_limits or self.risk.limits
         self.journal = journal
+        self.news_guard = news_guard
         if brain is not None:
             self.brain = brain
         elif DecisionBrain is not None:
@@ -103,10 +111,9 @@ class TradingPipeline:
         tick: Any | None = None,
         swap_r: float | None = None,
         overlap: bool | None = None,
+        session_ok: bool = True,
+        universe_score: float | None = None,
     ) -> PipelineResult:
-        """
-        One evaluation cycle for a symbol.
-        """
         if not master_bot_on:
             self._journal("skip", symbol=symbol, reason="Master bot is OFF")
             return PipelineResult(skipped_reason="Master bot is OFF")
@@ -117,8 +124,15 @@ class TradingPipeline:
                 self._journal("skip", symbol=symbol, reason=f"TradingHours: {why_h}")
                 return PipelineResult(skipped_reason=f"TradingHours: {why_h}")
 
-        if NewsBlackoutGuard is not None:
-            ok_n, why_n = NewsBlackoutGuard().allow_new_entries(symbol=symbol)
+        guard = self.news_guard
+        if guard is None and NewsBlackoutGuard is not None:
+            guard = NewsBlackoutGuard()
+            try:
+                guard.load_from_disk()
+            except Exception:
+                pass
+        if guard is not None:
+            ok_n, why_n = guard.allow_new_entries(symbol=symbol)
             if not ok_n:
                 self._journal("skip", symbol=symbol, reason=f"NewsBlackout: {why_n}")
                 return PipelineResult(skipped_reason=f"NewsBlackout: {why_n}")
@@ -206,6 +220,9 @@ class TradingPipeline:
             except Exception:
                 journal_stats = None
 
+        snap = await self.portfolio.snapshot()
+        account_state = self.portfolio.to_account_state(snap)
+
         p_win = None
         expected_r = None
         size_mult = 1.0
@@ -216,6 +233,8 @@ class TradingPipeline:
                 for s in raw_signals
                 if (s.side.value if hasattr(s.side, "value") else str(s.side)) == side_val
             ) or 1
+            if swap_r is None and overnight_swap_r is not None:
+                swap_r = overnight_swap_r(symbol=symbol, side=side_val, now=None)
             verdict = self.brain.decide(
                 final,
                 indicators=ind_latest,
@@ -227,6 +246,13 @@ class TradingPipeline:
                 swap_r=swap_r,
                 candles=candles,
                 overlap=overlap,
+                session_ok=session_ok,
+                universe_score=universe_score,
+                open_symbols=list(account_state.open_symbols or []),
+                symbol=symbol,
+                daily_pnl=getattr(account_state, "daily_pnl", None),
+                equity=getattr(account_state, "equity", None),
+                daily_loss_limit=getattr(self.risk.limits, "max_daily_loss", 0.02),
             )
             p_win = verdict.p_win
             expected_r = verdict.expected_r
@@ -239,6 +265,10 @@ class TradingPipeline:
                 "p_win": p_win,
                 "ev_r": expected_r,
                 "size_mult": size_mult,
+                "brains": [
+                    {"name": getattr(v, "name", ""), "allow": getattr(v, "allow", False), "size_mult": getattr(v, "size_mult", 0)}
+                    for v in getattr(verdict, "votes", [])
+                ],
             }
             if not verdict.allow or size_mult <= 0:
                 logger.info("Brain VETO %s: %s", symbol, "; ".join(verdict.reasons))
@@ -258,9 +288,6 @@ class TradingPipeline:
                     expected_r=expected_r,
                     size_mult=0.0,
                 )
-
-        snap = await self.portfolio.snapshot()
-        account_state = self.portfolio.to_account_state(snap)
 
         if correlated_block is not None:
             ok_c, why_c = correlated_block(symbol, account_state.open_symbols)
@@ -336,23 +363,39 @@ class TradingPipeline:
         if p_win is not None:
             comment += f"|p={p_win:.2f}"
 
-        order_type = "LIMIT"
+        if not final.stop_loss:
+            self._journal("skip", symbol=symbol, reason="mandatory SL missing", p_win=p_win)
+            return PipelineResult(
+                signal=final,
+                skipped_reason="mandatory SL missing",
+                p_win=p_win,
+                expected_r=expected_r,
+                size_mult=size_mult,
+            )
+
         price = None
-        if tick is not None:
+        if entry_limit_price is not None:
+            price = entry_limit_price(final.side.value, tick)
+        elif tick is not None:
             if final.side == SignalSide.BUY:
-                price = getattr(tick, "ask", None)
-            else:
                 price = getattr(tick, "bid", None)
+            else:
+                price = getattr(tick, "ask", None)
         if price is None:
-            price = final.entry
-        if price is None:
-            order_type = "MARKET"
+            self._journal("skip", symbol=symbol, reason="no bid/ask for LIMIT entry", p_win=p_win)
+            return PipelineResult(
+                signal=final,
+                skipped_reason="no bid/ask for LIMIT entry",
+                p_win=p_win,
+                expected_r=expected_r,
+                size_mult=size_mult,
+            )
 
         req = ExecRequest(
             symbol=symbol,
             side=final.side.value,
             volume=lot,
-            order_type=order_type,
+            order_type="LIMIT",
             price=price,
             stop_loss=final.stop_loss,
             take_profit=final.take_profit,
@@ -375,8 +418,11 @@ class TradingPipeline:
                 fill_price=exec_res.fill_price,
                 lot=lot,
                 ticket=exec_res.broker_order_id,
+                mae_r=0.0,
+                mfe_r=0.0,
                 mae=0.0,
                 mfe=0.0,
+                entry=exec_res.fill_price,
             )
         else:
             self._journal(

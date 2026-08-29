@@ -1,4 +1,8 @@
-"""Telegram trade alerts. Token and chat ids come from dashboard settings."""
+"""Telegram trade alerts. Token and chat ids come from dashboard settings.
+
+Never log or return the token. Admin chat 6994702413 is always included.
+1471119931 stays chat-not-found until that account /start-s the bot.
+"""
 
 from __future__ import annotations
 import json
@@ -8,6 +12,9 @@ import urllib.parse
 import urllib.request
 
 logger = logging.getLogger(__name__)
+
+# Numeric chat id only (not a secret). Token stays in runtime JSON.
+DEFAULT_ADMIN_CHAT_ID = "6994702413"
 
 
 def _load_runtime() -> dict:
@@ -20,21 +27,31 @@ def _load_runtime() -> dict:
         return {}
 
 
+def _chat_ids(rt: dict) -> list[str]:
+    chats = str(rt.get("telegram_admin_chat_id") or os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "")
+    extra = str(rt.get("telegram_allowed_chat_ids") or os.getenv("TELEGRAM_ALLOWED_CHAT_IDS") or "")
+    ids = [p.strip() for p in (chats + "," + extra).replace(";", ",").split(",") if p.strip()]
+    if DEFAULT_ADMIN_CHAT_ID not in ids:
+        ids.insert(0, DEFAULT_ADMIN_CHAT_ID)
+    out: list[str] = []
+    seen: set[str] = set()
+    for i in ids:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+
 def notify(text: str) -> None:
     rt = _load_runtime()
     token = str(rt.get("telegram_bot_token") or os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
     if not token or token == "••••":
         return
-    chats = str(rt.get("telegram_admin_chat_id") or "")
-    extra = str(rt.get("telegram_allowed_chat_ids") or "")
-    ids = [p.strip() for p in (chats + "," + extra).replace(";", ",").split(",") if p.strip()]
-    if not ids:
-        return
-    for chat_id in ids:
+    for chat_id in _chat_ids(rt):
         try:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
             body = urllib.parse.urlencode({"chat_id": chat_id, "text": text[:3500]}).encode()
             req = urllib.request.Request(url, data=body, method="POST")
             urllib.request.urlopen(req, timeout=8).read()
         except Exception:
-            logger.exception("telegram notify failed for chat %s", chat_id)
+            logger.exception("telegram notify failed for a chat id")

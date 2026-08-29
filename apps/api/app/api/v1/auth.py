@@ -25,7 +25,7 @@ router = APIRouter()
 _FAILS: dict[str, list[datetime]] = defaultdict(list)
 _LOCK = Lock()
 _WINDOW = timedelta(minutes=15)
-_MAX_FAILS = 6
+_MAX_FAILS = 8
 
 
 def _client_ip(request: Request) -> str:
@@ -64,7 +64,14 @@ async def bootstrap(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
+async def register(user_in: UserCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    ip = _client_ip(request)
+    locked, remain = _locked(ip)
+    if locked:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="تلاش زیاد. ۱۵ دقیقه صبر کن.",
+        )
     existing_count = await count_users(db)
     if existing_count > 0:
         raise HTTPException(
@@ -73,6 +80,7 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
         )
     existing = await get_user_by_email(db, user_in.email)
     if existing:
+        _record_fail(ip)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="این ایمیل قبلا ثبت شده")
     user = await create_user(db, user_in)
     await db.commit()
