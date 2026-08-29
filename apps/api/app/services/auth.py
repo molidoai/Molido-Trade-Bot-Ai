@@ -3,7 +3,7 @@ Authentication service.
 """
 
 from datetime import datetime, timezone
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import get_password_hash, verify_password, create_access_token
@@ -17,12 +17,19 @@ async def get_user_by_email(db: AsyncSession, email: str) -> User | None:
     return result.scalar_one_or_none()
 
 
+async def count_users(db: AsyncSession) -> int:
+    result = await db.execute(select(func.count()).select_from(User))
+    return int(result.scalar_one() or 0)
+
+
 async def create_user(db: AsyncSession, user_in: UserCreate) -> User:
+    existing = await count_users(db)
+    role = UserRole.ADMIN if existing == 0 else UserRole.OBSERVER
     user = User(
         email=user_in.email.lower().strip(),
         hashed_password=get_password_hash(user_in.password),
         full_name=user_in.full_name,
-        role=UserRole.ADMIN,  # first user is admin; later we can restrict
+        role=role,
         is_active=True,
     )
     db.add(user)
@@ -42,11 +49,9 @@ async def authenticate_user(db: AsyncSession, email: str, password: str) -> User
 
 
 async def login_user(db: AsyncSession, user: User, ip: str | None = None, user_agent: str | None = None) -> str:
-    """Update last_login and create access token. Also write audit log."""
     user.last_login_at = datetime.now(timezone.utc)
     await db.flush()
 
-    # Audit
     audit = AuditLog(
         user_id=user.id,
         action=AuditAction.LOGIN,
