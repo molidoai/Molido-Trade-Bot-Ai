@@ -1,34 +1,27 @@
-# Deploy Guide – MTrade.molido.shop
+# Deploy Guide – MTrade
 
-**Server:** `141.94.45.232`  
 **Domain:** `MTrade.molido.shop`  
-**Bot:** `@MolidoTrade_bot`
+**Bot:** set `TELEGRAM_BOT_TOKEN` only in server `.env` (never git).
 
-> Demo RoboForex credentials: enter only in the web UI / server `.env` — never commit to git.
+> Broker credentials: enter only in the web UI / server `.env` — never commit to git.
 
 ---
 
 ## 0) Security first
 
-1. The Telegram bot token was shared in chat → **revoke it in BotFather** (`/revoke`) and create a **new** token, then put only the new one in server `.env`.
-2. Open only ports: `22`, `80`, `443` (and optionally `8000` temporarily for debug).
+1. If a Telegram or GitHub token was pasted in chat, **revoke it** and create a new one. Put the new value only in server `.env`.
+2. Open only ports: `22`, `80`, `443`.
 3. Create a non-root sudo user for deploy.
+4. Do not commit VPS IPs, chat IDs, or tokens to this repo.
 
 ---
 
 ## 1) DNS
 
-In your DNS panel for `molido.shop`:
-
-| Type | Name   | Value          |
-|------|--------|----------------|
-| A    | MTrade | 141.94.45.232  |
-
-Wait until:
+Point `MTrade.molido.shop` A record to your VPS public IP.
 
 ```bash
 dig +short MTrade.molido.shop
-# should print 141.94.45.232
 ```
 
 ---
@@ -36,8 +29,7 @@ dig +short MTrade.molido.shop
 ## 2) On the VPS (SSH)
 
 ```bash
-ssh root@141.94.45.232
-# or: ssh youruser@141.94.45.232
+ssh youruser@<VPS_IP>
 ```
 
 ### Install Docker
@@ -54,6 +46,7 @@ apt install -y docker-compose-plugin
 mkdir -p /opt/molido && cd /opt/molido
 git clone https://github.com/molidoai/Molido-Trade-Bot-Ai.git
 cd Molido-Trade-Bot-Ai
+git checkout enable-live-and-harden-compose   # or main after merge
 ```
 
 ### Environment file
@@ -66,33 +59,20 @@ nano .env
 Set at least:
 
 ```env
-APP_NAME=Molido Trade Bot AI
 APP_ENV=production
 DEBUG=false
-SECRET_KEY=<generate-with: openssl rand -hex 32>
-API_PREFIX=/api/v1
-
-POSTGRES_USER=molido
+SECRET_KEY=<openssl rand -hex 32>
 POSTGRES_PASSWORD=<strong-password>
-POSTGRES_DB=molido_trading
-POSTGRES_HOST=postgres
-
-REDIS_HOST=redis
-
-TRADING_ACCOUNT_MODE=DEMO
-MASTER_BOT_ENABLED=false
-
-TELEGRAM_BOT_TOKEN=<NEW_TOKEN_FROM_BOTFATHER>
-TELEGRAM_ADMIN_CHAT_ID=1471119931
-TELEGRAM_ALLOWED_CHAT_IDS=1471119931,6994702413
-
-# Leave empty until you enter Demo in UI / later:
-MT5_DEMO_LOGIN=
-MT5_DEMO_PASSWORD=
-MT5_DEMO_SERVER=
+REDIS_PASSWORD=<strong-password>
+TRADING_ACCOUNT_MODE=REAL
+MASTER_BOT_ENABLED=true
+TELEGRAM_BOT_TOKEN=<NEW_TOKEN>
+TELEGRAM_ADMIN_CHAT_ID=<ADMIN_CHAT_ID>
+TELEGRAM_ALLOWED_CHAT_IDS=<comma-separated-ids>
+MT5_REAL_LOGIN=
+MT5_REAL_PASSWORD=
+MT5_REAL_SERVER=
 ```
-
-Generate secret:
 
 ```bash
 openssl rand -hex 32
@@ -100,17 +80,11 @@ openssl rand -hex 32
 
 ---
 
-## 3) Start core services
+## 3) Start services
 
 ```bash
 cd /opt/molido/Molido-Trade-Bot-Ai
-docker compose up -d postgres redis
-docker compose up -d --build api
-```
-
-Check:
-
-```bash
+docker compose up -d --build
 curl -s http://127.0.0.1:8000/api/v1/health
 ```
 
@@ -118,106 +92,15 @@ curl -s http://127.0.0.1:8000/api/v1/health
 
 ## 4) Nginx + HTTPS
 
-```bash
-apt install -y nginx certbot python3-certbot-nginx
-```
-
-Create `/etc/nginx/sites-available/mtrade`:
-
-```nginx
-server {
-    listen 80;
-    server_name MTrade.molido.shop;
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:3000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-```bash
-ln -sf /etc/nginx/sites-available/mtrade /etc/nginx/sites-enabled/
-nginx -t && systemctl reload nginx
-certbot --nginx -d MTrade.molido.shop
-```
+Use `infra/nginx/molido.conf` as a starting point. Terminate TLS with certbot on `MTrade.molido.shop`.
 
 ---
 
-## 5) Frontend
+## 5) Verify
 
-```bash
-cd /opt/molido/Molido-Trade-Bot-Ai/frontend
-# Node 20+
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-apt install -y nodejs
-npm install
-export NEXT_PUBLIC_API_URL=https://MTrade.molido.shop/api/v1
-npm run build
-# simple run (or put behind pm2):
-npm run start -- -p 3000
-```
-
-Or use `pm2`:
-
-```bash
-npm i -g pm2
-pm2 start "npm run start -- -p 3000" --name molido-web
-pm2 save
-```
-
----
-
-## 6) Telegram bot on server
-
-```bash
-cd /opt/molido/Molido-Trade-Bot-Ai/telegram-bot
-pip install -e . httpx
-export TELEGRAM_BOT_TOKEN='...'
-export TELEGRAM_ADMIN_CHAT_ID='1471119931'
-export TELEGRAM_ALLOWED_CHAT_IDS='1471119931,6994702413'
-python -m molido_telegram.bot
-```
-
-Prefer `pm2` or a systemd unit so it restarts on reboot.
-
-Test in Telegram: open `https://t.me/MolidoTrade_bot` → `/start` from Admin1 or Admin2.
-
----
-
-## 7) RoboForex Demo
-
-You said you will enter Demo yourself on the site:
-
-1. Keep `TRADING_ACCOUNT_MODE=DEMO`
-2. Keep `MASTER_BOT_ENABLED=false` until checks pass
-3. After MT5 terminal is available on the server (or remote), fill `MT5_DEMO_*`
-4. Run reconcile + one Paper/Demo cycle before enabling Master ON
-
----
-
-## 8) Verify checklist
-
-- [ ] `https://MTrade.molido.shop` loads dashboard
-- [ ] `https://MTrade.molido.shop/api/v1/health` returns JSON
-- [ ] Telegram `/status` works for both admin IDs
-- [ ] Non-admin chat IDs are ignored
-- [ ] Mode is DEMO, Master OFF
-- [ ] No secrets in git
-
----
-
-## What I still need from you to go further remotely
-
-- SSH access method: password or public key (you can add my key only if you want remote install)
-- Confirmation that DNS A record points to `141.94.45.232`
-- New Telegram token after revoke (do not paste in public GitHub issues)
+- [ ] Dashboard loads
+- [ ] `/api/v1/health` returns JSON
+- [ ] Telegram `/status` works only for allowed chat IDs
+- [ ] First dashboard user is admin; later registration is closed in production
+- [ ] `POST /api/v1/ops/*` returns 401 without admin JWT
+- [ ] No secrets, IPs, or chat IDs in git
