@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import clsx from "clsx";
 
 const NAV = [
-  { href: "/", label: "نمای کلی" },
+  { href: "/home", label: "نمای کلی" },
   { href: "/live", label: "معاملات زنده" },
   { href: "/scanner", label: "اسکنر بازار" },
   { href: "/positions", label: "پوزیشن‌ها" },

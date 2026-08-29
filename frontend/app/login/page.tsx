@@ -103,7 +103,7 @@ export default function LoginPage() {
         last_login_at: data.last_login_at,
         session_ip: data.session_ip,
       });
-      router.replace("/");
+      router.replace("/home");
     } finally {
       setBusy(false);
     }
@@ -111,11 +111,7 @@ export default function LoginPage() {
 
   return (
     <div className="flex min-h-screen items-center justify-center p-6">
-      <form
-        onSubmit={submit}
-        className="glass w-full max-w-md space-y-5 rounded-3xl p-8"
-        autoComplete="on"
-      >
+      <form onSubmit={submit} className="glass w-full max-w-md space-y-5 rounded-3xl p-8" autoComplete="on">
         <div className="flex items-center gap-3">
           <img src="/logo.svg" alt="Molido" width={48} height={48} className="h-12 w-12 rounded-2xl shadow-glow" />
           <div>
@@ -148,25 +144,13 @@ export default function LoginPage() {
             {setup ? (
               <label className="block space-y-1 text-sm">
                 <span className="text-slate-400">نام نمایشی</span>
-                <input
-                  className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2"
-                  value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
-                  placeholder="Owner"
-                />
+                <input className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2" value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Owner" />
               </label>
             ) : null}
 
             <label className="block space-y-1 text-sm">
               <span className="text-slate-400">ایمیل مالک</span>
-              <input
-                className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2"
-                type="email"
-                required
-                autoComplete="username"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-              />
+              <input className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2" type="email" required autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} />
             </label>
 
             <label className="block space-y-1 text-sm">
@@ -182,11 +166,7 @@ export default function LoginPage() {
                   onChange={(e) => setPassword(e.target.value)}
                   onKeyUp={(e) => setCaps(e.getModifierState("CapsLock"))}
                 />
-                <button
-                  type="button"
-                  className="rounded-xl border border-white/10 px-3 text-xs text-slate-300"
-                  onClick={() => setShow((s) => !s)}
-                >
+                <button type="button" className="rounded-xl border border-white/10 px-3 text-xs text-slate-300" onClick={() => setShow((s) => !s)}>
                   {show ? "پنهان" : "نمایش"}
                 </button>
               </div>
@@ -197,33 +177,18 @@ export default function LoginPage() {
               <>
                 <label className="block space-y-1 text-sm">
                   <span className="text-slate-400">تکرار رمز</span>
-                  <input
-                    className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2"
-                    type={show ? "text" : "password"}
-                    required
-                    minLength={8}
-                    autoComplete="new-password"
-                    value={confirm}
-                    onChange={(e) => setConfirm(e.target.value)}
-                  />
+                  <input className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2" type={show ? "text" : "password"} required minLength={8} autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
                 </label>
                 <div className="space-y-1">
                   <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
-                    <div
-                      className="h-full bg-cyan-400 transition-all"
-                      style={{ width: `${(meter.n / 5) * 100}%` }}
-                    />
+                    <div className="h-full bg-cyan-400 transition-all" style={{ width: `${(meter.n / 5) * 100}%` }} />
                   </div>
                   <p className="text-[11px] text-slate-400">قدرت رمز: {meter.label}</p>
                 </div>
               </>
             ) : null}
 
-            <button
-              type="submit"
-              disabled={busy || ownerExists === null}
-              className="w-full rounded-xl bg-cyan-400/20 py-2.5 font-medium text-cyan-100 disabled:opacity-50"
-            >
+            <button type="submit" disabled={busy || ownerExists === null} className="w-full rounded-xl bg-cyan-400/20 py-2.5 font-medium text-cyan-100 disabled:opacity-50">
               {busy ? "صبر کن…" : setup ? "ساخت مالک و ورود" : "ورود به داشبورد"}
             </button>
           </>
@@ -232,7 +197,7 @@ export default function LoginPage() {
         {msg ? <p className="text-sm text-amber-200">{msg}</p> : null}
 
         <p className="text-[11px] leading-5 text-slate-500">
-          نشست ۱۲ ساعته · JWT · قفل بعد از ۶ تلاش ناموفق · رمز در مرورگر ذخیره نمی‌شود
+          هر بار آدرس سایت را بزنی دوباره لاگین می‌خواهی. رمز در مرورگر ذخیره نمی‌شود.
         </p>
       </form>
     </div>

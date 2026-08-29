@@ -7,20 +7,22 @@ import { TopBar } from "@/components/layout/TopBar";
 import { EnvBanner } from "@/components/layout/EnvBanner";
 import { API, clearSession, getMeta, getToken } from "@/lib/auth";
 
+const PUBLIC = new Set(["/", "/login"]);
+
 export function AuthShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   const router = useRouter();
-  const [ok, setOk] = useState(path === "/login");
+  const [ok, setOk] = useState(PUBLIC.has(path));
   const meta = getMeta();
 
   useEffect(() => {
+    if (path === "/") {
+      router.replace("/login");
+      return;
+    }
     if (path === "/login") {
-      const t = getToken();
-      if (t) {
-        void fetch(`${API}/auth/me`, { headers: { Authorization: `Bearer ${t}` } }).then((r) => {
-          if (r.ok) router.replace("/");
-        });
-      }
+      // Hitting the site address always asks for credentials again.
+      clearSession();
       setOk(true);
       return;
     }
@@ -43,7 +45,7 @@ export function AuthShell({ children }: { children: React.ReactNode }) {
     })();
   }, [path, router]);
 
-  if (path === "/login") {
+  if (PUBLIC.has(path)) {
     return <>{children}</>;
   }
 
