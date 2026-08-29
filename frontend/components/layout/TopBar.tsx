@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { getToken } from "@/lib/auth";
+import { useApp } from "@/components/app/Providers";
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
@@ -8,12 +10,13 @@ export function TopBar() {
   const [busy, setBusy] = useState(false);
   const [master, setMaster] = useState(true);
   const [msg, setMsg] = useState("");
+  const { setNavOpen, theme, toggle } = useApp();
 
   async function kill() {
     setBusy(true);
     setMsg("");
     try {
-      const token = typeof window !== "undefined" ? localStorage.getItem("molido_token") : null;
+      const token = getToken();
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       if (token) headers.Authorization = `Bearer ${token}`;
       const r = await fetch(`${API}/ops/master`, {
@@ -22,7 +25,7 @@ export function TopBar() {
         body: JSON.stringify({ enabled: false, actor: "dashboard-kill-switch" }),
       });
       if (r.status === 401 || r.status === 403) {
-        setMsg("Kill Switch فقط با لاگین ادمین کار می‌کند");
+        setMsg("Kill Switch فقط با لاگین مالک");
         return;
       }
       if (!r.ok) {
@@ -39,34 +42,39 @@ export function TopBar() {
   }
 
   return (
-    <header className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-slate-950/40 px-6 py-3 backdrop-blur-xl">
-      <div className="flex items-center gap-3">
-        <h1 className="text-lg font-semibold">نمای کلی</h1>
-        <span className="rounded-full border border-rose-400/40 bg-rose-500/15 px-2.5 py-0.5 text-xs font-bold text-rose-300">
-          REAL
+    <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-[var(--line)] bg-[var(--panel)] px-3 py-3 backdrop-blur-xl md:px-6">
+      <div className="flex min-w-0 items-center gap-2">
+        <button
+          type="button"
+          className="rounded-lg border border-[var(--line)] px-2 py-1 text-sm md:hidden"
+          onClick={() => setNavOpen(true)}
+        >
+          منو
+        </button>
+        <h1 className="truncate text-base font-semibold md:text-lg">Molido</h1>
+        <span className="hidden rounded-full border border-amber-400/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-300 sm:inline">
+          DEMO
         </span>
-        <span className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+        <span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${
           master
-            ? "border-emerald-400/30 bg-emerald-500/15 text-emerald-300"
-            : "border-rose-400/30 bg-rose-500/15 text-rose-300"
+            ? "border-emerald-400/30 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+            : "border-rose-400/30 bg-rose-500/15 text-rose-600 dark:text-rose-300"
         }`}>
-          ربات: {master ? "روشن" : "قطع"}
+          {master ? "روشن" : "قطع"}
         </span>
-        {msg && <span className="text-xs text-amber-300">{msg}</span>}
+        {msg && <span className="hidden text-xs text-amber-600 dark:text-amber-300 sm:inline">{msg}</span>}
       </div>
-      <div className="flex items-center gap-4 text-sm">
-        <div className="text-left">
-          <div className="text-xs text-slate-400">Live pulse</div>
-          <div className="font-semibold text-cyan-300">{master ? "فعال" : "paused"}</div>
-        </div>
-        <div className="h-8 w-px bg-white/10" />
+      <div className="flex items-center gap-2 text-sm">
+        <button type="button" onClick={toggle} className="rounded-lg border border-[var(--line)] px-2 py-1 text-xs">
+          {theme === "dark" ? "روشن" : "تاریک"}
+        </button>
         <button
           type="button"
           disabled={busy || !master}
           onClick={kill}
-          className="rounded-lg border border-rose-500/40 bg-rose-600/20 px-3 py-1.5 text-sm text-rose-300 hover:bg-rose-600/35 disabled:opacity-40"
+          className="rounded-lg border border-rose-500/40 bg-rose-600/15 px-2 py-1.5 text-xs text-rose-600 dark:text-rose-300 disabled:opacity-40 md:text-sm"
         >
-          Kill Switch
+          Kill
         </button>
       </div>
     </header>
