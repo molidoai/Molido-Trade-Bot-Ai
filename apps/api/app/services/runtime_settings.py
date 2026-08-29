@@ -1,0 +1,82 @@
+"""Runtime settings stored on the server, never in git.
+Secrets can be changed from the dashboard."""
+
+from __future__ import annotations
+import json
+import os
+import secrets
+from pathlib import Path
+from threading import Lock
+
+_PATH = Path(os.getenv("RUNTIME_SETTINGS_PATH", "/app/data/runtime-settings.json"))
+_LOCK = Lock()
+
+DEFAULTS = {
+    "trading_account_mode": "REAL",
+    "master_bot_enabled": True,
+    "mt5_real_login": "",
+    "mt5_real_password": "",
+    "mt5_real_server": "",
+    "mt5_real_path": "",
+    "telegram_bot_token": "",
+    "telegram_admin_chat_id": "",
+    "telegram_allowed_chat_ids": "",
+    "default_risk_per_trade": 0.005,
+    "max_daily_loss": 0.02,
+    "max_drawdown": 0.05,
+    "max_open_positions": 5,
+}
+
+SECRET_KEYS = {
+    "mt5_real_password",
+    "telegram_bot_token",
+}
+
+
+def _ensure_parent() -> None:
+    _PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def load() -> dict:
+    with _LOCK:
+        if not _PATH.exists():
+            data = dict(DEFAULTS)
+            _ensure_parent()
+            _PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            return data
+        try:
+            data = json.loads(_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        out = dict(DEFAULTS)
+        out.update({k: v for k, v in data.items() if k in DEFAULTS})
+        return out
+
+
+def save(data: dict) -> dict:
+    current = load()
+    for key, value in data.items():
+        if key not in DEFAULTS:
+            continue
+        if key in SECRET_KEYS and (value is None or value == "" or value == "••••"):
+            continue
+        current[key] = value
+    with _LOCK:
+        _ensure_parent()
+        tmp = _PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(current, indent=2), encoding="utf-8")
+        tmp.replace(_PATH)
+    return current
+
+
+def mask(data: dict) -> dict:
+    out = dict(data)
+    for key in SECRET_KEYS:
+        val = str(out.get(key) or "")
+        out[key + "_set"] = bool(val)
+        out[key] = "••••" if val else ""
+    return out
+
+
+def generate_secret_key() -> str:
+    return secrets.token_hex(32)
