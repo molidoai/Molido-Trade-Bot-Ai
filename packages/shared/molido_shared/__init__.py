@@ -13,6 +13,7 @@ from molido_shared.types import (
 )
 from molido_shared.point_in_time import closed_bars, InsufficientDataError
 from molido_shared.data_quality import score_candles, QualityReport
+from molido_shared.journal import TradeJournal, default_journal_path
 
 __all__ = [
     "AccountInfo",
@@ -30,4 +31,6 @@ __all__ = [
     "InsufficientDataError",
     "score_candles",
     "QualityReport",
+    "TradeJournal",
+    "default_journal_path",
 ]
