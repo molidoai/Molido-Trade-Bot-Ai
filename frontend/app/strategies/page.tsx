@@ -1,7 +1,19 @@
+import { TiltCard } from "@/components/ui/TiltCard";
+
+const STRATS = ["Trend Following", "Donchian Breakout", "RSI Mean Reversion"];
+
 export default function Page() {
   return (
-    <div className="rounded-xl border border-slate-700/50 bg-slate-800/60 p-8 text-center text-slate-400">
-      صفحه «strategies» – در حال تکمیل (PHASE 11)
+    <div className="space-y-6">
+      <h2 className="aurora text-3xl font-black">استراتژی‌ها</h2>
+      <div className="grid gap-4 md:grid-cols-3">
+        {STRATS.map((s) => (
+          <TiltCard key={s}>
+            <p className="font-medium">{s}</p>
+            <p className="mt-2 text-xs text-emerald-300">فعال</p>
+          </TiltCard>
+        ))}
+      </div>
     </div>
   );
 }
