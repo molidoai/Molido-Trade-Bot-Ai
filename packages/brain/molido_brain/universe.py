@@ -76,11 +76,11 @@ def resolve_trade_timeframe(
     overlap: bool,
     spread_ok: bool,
 ) -> TimeFrame:
+    key = (raw or "").strip()
+    if key.upper() in ("M1", "1M"):
+        return TimeFrame.M15
     if not is_auto_timeframe(raw):
-        key = (raw or "").strip()
         tf = _TF.get(key) or _TF.get(key.upper())
-        if tf == TimeFrame.M1:
-            return TimeFrame.M15
         if tf is not None:
             return tf
     if overlap and spread_ok:
