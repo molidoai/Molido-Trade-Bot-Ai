@@ -25,21 +25,21 @@ type FormState = {
 };
 
 const empty: FormState = {
-  trading_account_mode: "REAL",
+  trading_account_mode: "DEMO",
   master_bot_enabled: true,
   mt5_login: "",
   mt5_password: "",
   mt5_server: "",
   mt5_path: "",
-  symbols: "EURUSD,GBPUSD,XAUUSD",
-  timeframe: "M15",
+  symbols: "auto",
+  timeframe: "AUTO",
   telegram_bot_token: "",
   telegram_admin_chat_id: "",
   telegram_allowed_chat_ids: "",
-  default_risk_per_trade: 0.005,
+  default_risk_per_trade: 0.0025,
   max_daily_loss: 0.02,
-  max_drawdown: 0.05,
-  max_open_positions: 5,
+  max_drawdown: 0.04,
+  max_open_positions: 3,
   mt5_password_set: false,
   telegram_bot_token_set: false,
 };
@@ -224,9 +224,9 @@ export default function SettingsPage() {
         </div>
         <Field label="حالت حساب">
           <select className={inputCls} value={form.trading_account_mode} onChange={(e) => set("trading_account_mode", e.target.value)}>
-            <option value="REAL">REAL (حساب واقعی)</option>
             <option value="DEMO">DEMO</option>
             <option value="PROP">PROP</option>
+            <option value="REAL">REAL (حساب واقعی)</option>
           </select>
         </Field>
 
@@ -248,12 +248,12 @@ export default function SettingsPage() {
 
         <p className="pt-1 text-sm font-medium text-slate-300">بازار</p>
         <div className="grid gap-3 md:grid-cols-2">
-          <Field label="نمادها" hint="با کاما جدا کن">
+          <Field label="نمادها" hint="auto یا خالی = برین از یونیورس انتخاب می‌کند. اختیاری: لیست با کاما.">
             <input className={inputCls} value={form.symbols} onChange={(e) => set("symbols", e.target.value)} />
           </Field>
-          <Field label="تایم‌فریم">
+          <Field label="تایم‌فریم" hint="AUTO = M15 و فیلتر H1؛ M5 فقط در overlap اگر spread خوب باشد. M1 نداریم.">
             <select className={inputCls} value={form.timeframe} onChange={(e) => set("timeframe", e.target.value)}>
-              <option value="M1">M1</option>
+              <option value="AUTO">AUTO (brain)</option>
               <option value="M5">M5</option>
               <option value="M15">M15</option>
               <option value="H1">H1</option>
@@ -278,13 +278,13 @@ export default function SettingsPage() {
 
         <p className="pt-1 text-sm font-medium text-slate-300">ریسک</p>
         <div className="grid gap-3 md:grid-cols-4">
-          <Field label="ریسک هر معامله" hint="مثلا ۰.۰۰۵ یعنی ۰.۵٪">
+          <Field label="ریسک هر معامله" hint="مثلا ۰.۰۰۲۵ یعنی ۰.۲۵٪">
             <input className={inputCls} type="number" step="0.001" value={form.default_risk_per_trade} onChange={(e) => set("default_risk_per_trade", Number(e.target.value))} />
           </Field>
           <Field label="سقف ضرر روزانه" hint="مثلا ۰.۰۲ یعنی ۲٪">
             <input className={inputCls} type="number" step="0.001" value={form.max_daily_loss} onChange={(e) => set("max_daily_loss", Number(e.target.value))} />
           </Field>
-          <Field label="حداکثر دراودان" hint="مثلا ۰.۰۵ یعنی ۵٪">
+          <Field label="حداکثر دراودان" hint="مثلا ۰.۰۴ یعنی ۴٪">
             <input className={inputCls} type="number" step="0.001" value={form.max_drawdown} onChange={(e) => set("max_drawdown", Number(e.target.value))} />
           </Field>
           <Field label="حداکثر پوزیشن باز">
