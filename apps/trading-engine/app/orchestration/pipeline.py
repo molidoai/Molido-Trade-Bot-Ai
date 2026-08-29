@@ -1,10 +1,10 @@
 """
 Core trading pipeline (Master Prompt §52):
 
-  Strategy → Signal → Risk → Execution → Broker
+  Strategy → Signal → Brain → Risk → Execution → Broker
 
-This module wires all engines together. Used by Paper, Demo and (later) Live loops.
-Nothing here bypasses RiskEngine.
+This module wires all engines together. Used by Paper, Demo and Live loops.
+Nothing here bypasses RiskEngine. The brain may only veto, never enlarge size.
 """
 
 from __future__ import annotations
@@ -26,6 +26,10 @@ try:
     from molido_regime import MarketRegimeEngine
 except ImportError:
     TradingHoursGuard = NewsBlackoutGuard = MarketRegimeEngine = None  # type: ignore
+try:
+    from molido_brain import DecisionBrain
+except ImportError:
+    DecisionBrain = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +41,8 @@ class PipelineResult:
     lot_size: float = 0.0
     exec_result: ExecResult | None = None
     skipped_reason: str | None = None
+    p_win: float | None = None
+    expected_r: float | None = None
 
 
 class TradingPipeline:
@@ -52,6 +58,7 @@ class TradingPipeline:
         reconciler: Reconciler,
         account_mode: str = "DEMO",
         risk_limits: RiskLimits | None = None,
+        brain: object | None = None,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -63,6 +70,12 @@ class TradingPipeline:
         self.reconciler = reconciler
         self.account_mode = account_mode
         self.risk_limits = risk_limits or RiskLimits()
+        if brain is not None:
+            self.brain = brain
+        elif DecisionBrain is not None:
+            self.brain = DecisionBrain()
+        else:
+            self.brain = None
 
     async def on_candles(
         self,
@@ -122,7 +135,7 @@ class TradingPipeline:
 
         final = finals[0]
 
-        # Handle EXIT
+        # Handle EXIT — brain never blocks exits
         if final.side == SignalSide.EXIT and open_positions:
             pos = open_positions[0]
             req = ExecRequest(
@@ -147,6 +160,35 @@ class TradingPipeline:
                 signal=final,
                 skipped_reason=final.reject_reason or final.side.value,
             )
+
+        # 3b. Decision brain (veto only)
+        p_win = None
+        expected_r = None
+        if self.brain is not None:
+            side_val = final.side.value if hasattr(final.side, "value") else str(final.side)
+            agreeing = sum(
+                1
+                for s in raw_signals
+                if (s.side.value if hasattr(s.side, "value") else str(s.side)) == side_val
+            ) or 1
+            verdict = self.brain.decide(
+                final,
+                indicators=ind_latest,
+                regime=regime,
+                agreeing=agreeing,
+            )
+            p_win = verdict.p_win
+            expected_r = verdict.expected_r
+            final.reasons.extend(verdict.reasons)
+            final.meta = {**(final.meta or {}), "p_win": p_win, "ev_r": expected_r}
+            if not verdict.allow:
+                logger.info("Brain VETO %s: %s", symbol, "; ".join(verdict.reasons))
+                return PipelineResult(
+                    signal=final,
+                    skipped_reason="; ".join(verdict.reasons),
+                    p_win=p_win,
+                    expected_r=expected_r,
+                )
 
         # 4. Risk Engine
         snap = await self.portfolio.snapshot()
@@ -184,9 +226,14 @@ class TradingPipeline:
                 signal=final,
                 risk_allowed=False,
                 skipped_reason="; ".join(risk_result.reasons),
+                p_win=p_win,
+                expected_r=expected_r,
             )
 
-        # 5. Execution
+        # 5. Execution — brain never increases lot size
+        comment = f"{final.strategy}|sc={final.score:.0f}"
+        if p_win is not None:
+            comment += f"|p={p_win:.2f}"
         req = ExecRequest(
             symbol=symbol,
             side=final.side.value,
@@ -198,7 +245,7 @@ class TradingPipeline:
             strategy=final.strategy,
             signal_score=final.score,
             risk_amount=risk_result.risk_amount,
-            comment=f"{final.strategy}|sc={final.score:.0f}",
+            comment=comment,
         )
         exec_res = await self.execution.execute(req)
         await self.positions.sync_from_broker()
@@ -208,4 +255,6 @@ class TradingPipeline:
             risk_allowed=True,
             lot_size=risk_result.lot_size,
             exec_result=exec_res,
+            p_win=p_win,
+            expected_r=expected_r,
         )
