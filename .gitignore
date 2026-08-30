@@ -6,6 +6,9 @@
 *.key
 secrets/
 
+# Claude Code local session state
+.claude/
+
 # Python
 __pycache__/
 *.py[cod]
