@@ -37,6 +37,10 @@ class RiskLimits:
     cooldown_seconds: int = 180
     high_vol_risk_mult: float = 0.25
     extreme_vol_block: bool = True
+    # Optional ML volatility-warning signal (packages/regime/ml_engine.py).
+    # Reuses high_vol_risk_mult above -- an ML high-vol call reduces size the
+    # same way a rule-based "High Volatility" regime does, never differently.
+    ml_high_vol_threshold: float = 0.5
     block_correlated: bool = True
     min_margin_level: float = 300.0
     min_free_margin_ratio: float = 0.3
@@ -82,6 +86,10 @@ class RiskContext:
     spread_points: float | None = None
     atr: float | None = None
     regime: str | None = None
+    # P(model's "HighVol" label) from molido_regime.MLVolatilityDetector, or
+    # None if no model is loaded / not enough history -- None must behave
+    # identically to "no ML signal", never as 0.0 (which would be a claim).
+    ml_high_vol_prob: float | None = None
     account: AccountState = field(default_factory=lambda: AccountState(equity=0, balance=0))
     # None (not a fresh RiskLimits()) so RiskEngine.evaluate()'s
     # `ctx.limits or self.limits` actually falls back to the engine's own

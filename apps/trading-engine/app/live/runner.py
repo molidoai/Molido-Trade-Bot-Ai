@@ -83,8 +83,10 @@ OPS_POLL_FAIL_LIMIT = 4
 
 def _poll_ops(default_master: bool, fail_count: int) -> tuple[bool, int, int]:
     url = os.getenv("OPS_STATE_URL", "http://api:8000/api/v1/ops/state")
+    token = os.getenv("ENGINE_INTERNAL_TOKEN", "")
     try:
-        with urllib.request.urlopen(url, timeout=2) as resp:
+        req = urllib.request.Request(url, headers={"X-Engine-Token": token})
+        with urllib.request.urlopen(req, timeout=2) as resp:
             data = json.loads(resp.read().decode())
             master = bool(data.get("master_on", default_master))
             seq = int(data.get("flatten_seq") or 0)

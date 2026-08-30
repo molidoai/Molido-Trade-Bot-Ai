@@ -15,7 +15,11 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-molido}"]
+      # -d is required: pg_isready without it defaults to a database named
+      # after the user ("molido"), which doesn't exist (the real db is
+      # molido_trading) -- every check was logging a FATAL error server-side
+      # every 10s even though the healthcheck itself still passed.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-molido} -d ${POSTGRES_DB:-molido_trading}"]
       interval: 10s
       timeout: 5s
       retries: 5
