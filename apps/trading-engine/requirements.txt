@@ -1,0 +1,8 @@
+# Trading Engine dependencies
+# Shared packages are installed in editable mode from monorepo root
+
+pydantic==2.10.4
+pydantic-settings==2.7.0
+structlog==24.4.0
+mt5linux
+# MetaTrader5==5.0.45   # Uncomment only on Windows / Wine environment with MT5 terminal

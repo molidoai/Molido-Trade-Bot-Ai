@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  backend-tests:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install workspace packages (editable)
+        run: |
+          pip install --upgrade pip
+          pip install pytest
+          pip install \
+            -e packages/shared -e packages/broker -e packages/indicators \
+            -e packages/strategies -e packages/signals -e packages/risk \
+            -e packages/execution -e packages/portfolio -e packages/guards \
+            -e packages/regime -e packages/brain -e packages/security \
+            -e packages/observability -e packages/anomaly -e packages/backtester \
+            -e telegram-bot
+          pip install -r telegram-bot/requirements.txt
+          pip install -r apps/api/requirements.txt
+
+      # apps/api and apps/trading-engine both have a top-level package
+      # literally named `app`, so they can never both be on sys.path in the
+      # same pytest run without one shadowing the other. Everything except
+      # tests/unit/test_config.py resolves fine as-is (tests that need
+      # apps/trading-engine's `app` insert it into sys.path themselves, e.g.
+      # tests/unit/paper/test_pipeline.py) — test_config.py is the only one
+      # that needs apps/api's `app.core.config`, so it runs in its own step,
+      # scoped from that directory, instead of sharing a pytest session with
+      # everything else.
+      - name: Run unit tests (excluding test_config.py)
+        run: pytest tests/unit --deselect tests/unit/test_config.py -v
+
+      - name: Run test_config.py (scoped to apps/api)
+        working-directory: apps/api
+        env:
+          SECRET_KEY: ci-secret-key-that-is-long-enough-32chars
+          POSTGRES_PASSWORD: ci-postgres-password
+          ENGINE_INTERNAL_TOKEN: ci-engine-token-16chars-min
+        run: pytest ../../tests/unit/test_config.py -v
+
+  frontend-build:
+    name: Frontend typecheck + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build

@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+html.dark {
+  color-scheme: dark;
+  --gold: #fbbf24;
+  --cyan: #22d3ee;
+  --void: #070b16;
+  --ink: #e8eef8;
+  --muted: #94a3b8;
+  --glass: linear-gradient(160deg, rgba(15, 23, 42, 0.78), rgba(8, 12, 32, 0.5));
+  --line: rgba(148, 163, 184, 0.18);
+  --panel: rgba(2, 6, 23, 0.55);
+}
+
+html.light {
+  color-scheme: light;
+  --void: #eef3f9;
+  --ink: #0f172a;
+  --muted: #475569;
+  --glass: linear-gradient(160deg, rgba(255, 255, 255, 0.86), rgba(241, 245, 249, 0.72));
+  --line: rgba(15, 23, 42, 0.1);
+  --panel: rgba(255, 255, 255, 0.72);
+}
+
+html,
+body {
+  min-height: 100%;
+  min-height: 100dvh;
+  background: var(--void);
+  color: var(--ink);
+}
+
+body {
+  @apply antialiased;
+  overflow: auto;
+}
+
+@media (min-width: 768px) {
+  body {
+    overflow: hidden;
+    perspective: 1400px;
+  }
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.25); border-radius: 99px; }
+
+@keyframes floaty {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.45); }
+  70% { box-shadow: 0 0 0 14px rgba(251, 191, 36, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(251, 191, 36, 0); }
+}
+
+@keyframes sheen {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+
+.glass {
+  background: var(--glass);
+  border: 1px solid var(--line);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(18px);
+}
+
+@media (hover: hover) {
+  .glass:hover {
+    border-color: rgba(34, 211, 238, 0.4);
+  }
+}
+
+.gold-live {
+  animation: pulse-ring 2.4s ease-out infinite;
+}
+
+.aurora {
+  background: linear-gradient(120deg, #22d3ee, #6366f1, #f59e0b, #22d3ee);
+  background-size: 200% 200%;
+  animation: sheen 8s linear infinite;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+html.light .aurora {
+  background: linear-gradient(120deg, #0891b2, #4f46e5, #d97706, #0891b2);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  background-clip: text;
+}

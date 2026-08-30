@@ -1,0 +1,13 @@
+[project]
+name = "molido-telegram"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["httpx>=0.27"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["molido_telegram*"]
