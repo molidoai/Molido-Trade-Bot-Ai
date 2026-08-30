@@ -22,11 +22,12 @@ from molido_risk import RiskEngine, RiskContext, RiskLimits, AccountState, RiskD
 from molido_execution import ExecutionEngine, ExecRequest, ExecResult
 from molido_portfolio import PositionManager, PortfolioManager, Reconciler
 try:
-    from molido_guards import TradingHoursGuard, NewsBlackoutGuard, correlated_block
+    from molido_guards import TradingHoursGuard, NewsBlackoutGuard, correlated_block, default_calendar_path
     from molido_regime import MarketRegimeEngine
 except ImportError:
     TradingHoursGuard = NewsBlackoutGuard = MarketRegimeEngine = None  # type: ignore
     correlated_block = None  # type: ignore
+    default_calendar_path = None  # type: ignore
 try:
     from molido_execution.limit_entry import entry_limit_price
 except ImportError:
@@ -126,7 +127,8 @@ class TradingPipeline:
 
         guard = self.news_guard
         if guard is None and NewsBlackoutGuard is not None:
-            guard = NewsBlackoutGuard()
+            path = default_calendar_path() if default_calendar_path is not None else None
+            guard = NewsBlackoutGuard(calendar_path=path)
             try:
                 guard.load_from_disk()
             except Exception:

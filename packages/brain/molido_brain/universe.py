@@ -174,14 +174,16 @@ class UniversePicker:
         room = max(0, self.max_open - len(open_n))
         take = min(self.max_new, room)
         picked: list[CheapCandidate] = []
+        if take <= 0:
+            return picked
         for row in ranked:
             if _norm(row.symbol) in open_n:
                 continue
             if row.score <= 0:
                 continue
-            picked.append(row)
             if len(picked) >= take:
                 break
+            picked.append(row)
         return picked
 
     def h1_budget(self, spread_ranked: Sequence[str]) -> list[str]:

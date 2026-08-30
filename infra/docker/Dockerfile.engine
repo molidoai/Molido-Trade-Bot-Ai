@@ -14,6 +14,6 @@ COPY apps/trading-engine/app /app/app
 
 ENV PYTHONPATH=/packages/shared:/packages/broker:/packages/indicators:/packages/strategies:/packages/signals:/packages/risk:/packages/execution:/packages/portfolio:/packages/guards:/packages/regime:/packages/anomaly:/packages/observability:/packages/security:/packages/backtester:/packages/brain:/app
 ENV TRADING_ACCOUNT_MODE=DEMO
-ENV MASTER_BOT_ENABLED=true
+ENV MASTER_BOT_ENABLED=false
 
 CMD ["python", "-m", "app.live.runner"]

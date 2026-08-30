@@ -1,7 +1,9 @@
 """Telegram trade alerts. Token and chat ids come from dashboard settings.
 
-Never log or return the token. Admin chat 6994702413 is always included.
-1471119931 stays chat-not-found until that account /start-s the bot.
+Never log or return the token. Chat ids come only from
+telegram_admin_chat_id / telegram_allowed_chat_ids (runtime settings or env)
+— never hardcoded, per docs/DEPLOY_MTRADE.md ("No secrets, IPs, or chat ids
+in git").
 """
 
 from __future__ import annotations
@@ -12,9 +14,6 @@ import urllib.parse
 import urllib.request
 
 logger = logging.getLogger(__name__)
-
-# Numeric chat id only (not a secret). Token stays in runtime JSON.
-DEFAULT_ADMIN_CHAT_ID = "6994702413"
 
 
 def _load_runtime() -> dict:
@@ -31,8 +30,6 @@ def _chat_ids(rt: dict) -> list[str]:
     chats = str(rt.get("telegram_admin_chat_id") or os.getenv("TELEGRAM_ADMIN_CHAT_ID") or "")
     extra = str(rt.get("telegram_allowed_chat_ids") or os.getenv("TELEGRAM_ALLOWED_CHAT_IDS") or "")
     ids = [p.strip() for p in (chats + "," + extra).replace(";", ",").split(",") if p.strip()]
-    if DEFAULT_ADMIN_CHAT_ID not in ids:
-        ids.insert(0, DEFAULT_ADMIN_CHAT_ID)
     out: list[str] = []
     seen: set[str] = set()
     for i in ids:

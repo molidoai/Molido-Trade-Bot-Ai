@@ -74,8 +74,12 @@ class TradeJournal:
         )
         direction = 1.0 if str(side or "").upper() == "BUY" else -1.0
         r = (float(price) - float(entry)) * direction / float(stop_distance)
-        mae_r = min(float(st.get("mae_r", st.get("mae", 0.0))), r)
-        mfe_r = max(float(st.get("mfe_r", st.get("mfe", 0.0))), r)
+        # Round at the point of storage (not just when journaling the
+        # open_mark event below) so every later reader — including the
+        # eventual close/exit/flatten record — sees the same rounded value
+        # instead of accumulated float division noise (e.g. -1.000000000000112).
+        mae_r = round(min(float(st.get("mae_r", st.get("mae", 0.0))), r), 4)
+        mfe_r = round(max(float(st.get("mfe_r", st.get("mfe", 0.0))), r), 4)
         st["mae"] = mae_r
         st["mfe"] = mfe_r
         st["mae_r"] = mae_r

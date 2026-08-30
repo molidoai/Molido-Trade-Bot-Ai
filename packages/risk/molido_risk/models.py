@@ -83,7 +83,12 @@ class RiskContext:
     atr: float | None = None
     regime: str | None = None
     account: AccountState = field(default_factory=lambda: AccountState(equity=0, balance=0))
-    limits: RiskLimits = field(default_factory=RiskLimits)
+    # None (not a fresh RiskLimits()) so RiskEngine.evaluate()'s
+    # `ctx.limits or self.limits` actually falls back to the engine's own
+    # configured limits when the caller doesn't explicitly override them —
+    # a default-constructed RiskLimits() here would silently ignore
+    # RiskEngine(limits=...) for any caller that forgets to re-thread it.
+    limits: RiskLimits | None = None
     is_exit: bool = False
 
 

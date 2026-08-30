@@ -30,7 +30,7 @@ def check_env_safety() -> SecurityReport:
     elif len(secret) < 32:
         findings.append("SECRET_KEY should be at least 32 characters")
 
-    mode = os.getenv("TRADING_ACCOUNT_MODE", "REAL").upper()
+    mode = os.getenv("TRADING_ACCOUNT_MODE", "DEMO").upper()
     if mode == "REAL":
         warnings.append("TRADING_ACCOUNT_MODE=REAL — live capital is in use")
         if not os.getenv("MT5_REAL_LOGIN") or not os.getenv("MT5_REAL_PASSWORD") or not os.getenv("MT5_REAL_SERVER"):
@@ -38,8 +38,12 @@ def check_env_safety() -> SecurityReport:
     if mode not in ("DEMO", "PROP", "REAL"):
         findings.append(f"Invalid TRADING_ACCOUNT_MODE: {mode}")
 
-    if os.getenv("MASTER_BOT_ENABLED", "true").lower() in ("1", "true", "yes"):
+    if os.getenv("MASTER_BOT_ENABLED", "false").lower() in ("1", "true", "yes"):
         warnings.append("MASTER_BOT_ENABLED is true at process start")
+
+    engine_token = os.getenv("ENGINE_INTERNAL_TOKEN", "")
+    if not engine_token or len(engine_token) < 16:
+        findings.append("ENGINE_INTERNAL_TOKEN is missing or too short (needed to authenticate POST /ops/heartbeat)")
 
     pw = os.getenv("POSTGRES_PASSWORD", "")
     if not pw or pw in ("changeme", "change-me-strong-password") or pw.startswith("replace-me"):

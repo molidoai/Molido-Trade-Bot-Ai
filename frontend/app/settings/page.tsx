@@ -4,8 +4,6 @@ import { useEffect, useState } from "react";
 import { API, getToken } from "@/lib/auth";
 
 type FormState = {
-  trading_account_mode: string;
-  master_bot_enabled: boolean;
   mt5_login: string;
   mt5_password: string;
   mt5_server: string;
@@ -24,8 +22,6 @@ type FormState = {
 };
 
 const empty: FormState = {
-  trading_account_mode: "DEMO",
-  master_bot_enabled: true,
   mt5_login: "",
   mt5_password: "",
   mt5_server: "",
@@ -106,8 +102,6 @@ export default function SettingsPage() {
     setBusy(true);
     try {
       const body: Record<string, unknown> = {
-        trading_account_mode: form.trading_account_mode,
-        master_bot_enabled: form.master_bot_enabled,
         mt5_login: form.mt5_login,
         mt5_server: form.mt5_server,
         mt5_path: form.mt5_path,
@@ -163,20 +157,10 @@ export default function SettingsPage() {
       </p>
 
       <div className="glass space-y-5 rounded-2xl p-5">
-        <div className="flex items-center justify-between gap-4">
-          <p className="font-medium">حساب و مستر</p>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={form.master_bot_enabled} onChange={(e) => set("master_bot_enabled", e.target.checked)} />
-            مستر روشن
-          </label>
+        <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-3 text-xs text-amber-200">
+          حالت حساب (DEMO/REAL) و روشن/خاموش کردن مستر از اینجا قابل تغییر نیست — عمداً. برای رفتن به REAL باید از
+          صفحه «معاملات زنده» با تأیید دومرحله‌ای اقدام کنید، نه با یک ذخیره‌ی ساده.
         </div>
-        <Field label="حالت حساب">
-          <select className={inputCls} value={form.trading_account_mode} onChange={(e) => set("trading_account_mode", e.target.value)}>
-            <option value="DEMO">DEMO</option>
-            <option value="REAL">REAL (حساب واقعی)</option>
-            <option value="PROP">PROP</option>
-          </select>
-        </Field>
 
         <p className="pt-1 text-sm font-medium text-slate-300">متاتریدر ۵</p>
         <div className="grid gap-3 md:grid-cols-2">

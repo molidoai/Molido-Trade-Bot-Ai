@@ -1,5 +1,7 @@
 import { TiltCard } from "@/components/ui/TiltCard";
 import { FlattenButton } from "./FlattenButton";
+import { BrainPanel } from "./BrainPanel";
+import { AccountControl } from "./AccountControl";
 
 export default function Page() {
   return (
@@ -24,6 +26,10 @@ export default function Page() {
           موتور زنده بعد از اتصال MT5 سفارش می‌فرستد. تا وقتی لاگین REAL خالی باشد، رانر بالا نمی‌آید.
         </p>
         <FlattenButton />
+      </div>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <AccountControl />
+        <BrainPanel />
       </div>
     </div>
   );

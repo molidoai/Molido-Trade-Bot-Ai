@@ -1,7 +1,7 @@
 """Admin-editable runtime settings from the dashboard."""
 
 from __future__ import annotations
-from typing import Any, Literal
+from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
@@ -13,8 +13,11 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 
 
 class SettingsPatch(BaseModel):
-    trading_account_mode: Literal["DEMO", "PROP", "REAL"] | None = None
-    master_bot_enabled: bool | None = None
+    # trading_account_mode / master_bot_enabled are deliberately NOT here.
+    # The trading-engine reads both straight from runtime-settings.json every
+    # cycle (see app.live.runner._apply_runtime), so if this endpoint could
+    # write them too it would bypass the confirm_token-gated 2-step flow in
+    # POST /ops/mode and /ops/live entirely — go live only through /ops/*.
     mt5_login: str | None = None
     mt5_password: str | None = None
     mt5_server: str | None = None

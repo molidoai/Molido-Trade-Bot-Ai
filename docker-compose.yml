@@ -86,8 +86,8 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
-      TRADING_ACCOUNT_MODE: DEMO
-      MASTER_BOT_ENABLED: "true"
+      TRADING_ACCOUNT_MODE: ${TRADING_ACCOUNT_MODE:-DEMO}
+      MASTER_BOT_ENABLED: ${MASTER_BOT_ENABLED:-false}
       OPS_STATE_URL: http://api:8000/api/v1/ops/state
       OPS_HEARTBEAT_URL: http://api:8000/api/v1/ops/heartbeat
       RUNTIME_SETTINGS_PATH: /app/data/runtime-settings.json

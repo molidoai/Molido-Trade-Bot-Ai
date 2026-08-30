@@ -24,7 +24,7 @@ from molido_execution import ExecutionEngine
 from molido_portfolio import PositionManager, PortfolioManager, Reconciler
 from molido_portfolio.trade_manager import TradeManager
 from molido_regime import MarketRegimeEngine
-from molido_guards import SessionCalendar, NewsBlackoutGuard
+from molido_guards import SessionCalendar, NewsBlackoutGuard, default_calendar_path
 from molido_strategies.engine import parse_strategy_names
 from molido_brain import (
     DecisionBrain,
@@ -39,6 +39,7 @@ from molido_brain import (
 from app.orchestration.pipeline import TradingPipeline
 from app.data.market_data import MarketDataEngine
 from app.live.alerts import notify as telegram_notify
+from app.live.decision_log import record_decision
 
 logger = logging.getLogger(__name__)
 
@@ -74,29 +75,44 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
-def _poll_ops(default_master: bool) -> tuple[bool, int]:
+# If the ops API can't be reached for this many consecutive cycles, we can no
+# longer confirm the operator's intent — fail closed (force master OFF)
+# rather than keep trading blind on a possibly-stale in-memory value.
+OPS_POLL_FAIL_LIMIT = 4
+
+
+def _poll_ops(default_master: bool, fail_count: int) -> tuple[bool, int, int]:
     url = os.getenv("OPS_STATE_URL", "http://api:8000/api/v1/ops/state")
     try:
         with urllib.request.urlopen(url, timeout=2) as resp:
             data = json.loads(resp.read().decode())
             master = bool(data.get("master_on", default_master))
             seq = int(data.get("flatten_seq") or 0)
-            return master, seq
+            return master, seq, 0
     except Exception:
-        logger.debug("ops state poll failed; keeping master=%s", default_master)
-        return default_master, 0
+        fail_count += 1
+        if fail_count >= OPS_POLL_FAIL_LIMIT:
+            if default_master:
+                logger.warning(
+                    "ops state unreachable for %d consecutive cycles; failing closed (master OFF)",
+                    fail_count,
+                )
+            return False, 0, fail_count
+        logger.debug("ops state poll failed (%d/%d); keeping master=%s", fail_count, OPS_POLL_FAIL_LIMIT, default_master)
+        return default_master, 0, fail_count
 
 
 def _post_heartbeat() -> None:
     url = os.getenv("OPS_HEARTBEAT_URL") or os.getenv(
         "OPS_STATE_URL", "http://api:8000/api/v1/ops/state"
     ).replace("/state", "/heartbeat")
+    token = os.getenv("ENGINE_INTERNAL_TOKEN", "")
     try:
         req = urllib.request.Request(
             url,
             data=b"{}",
             method="POST",
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "X-Engine-Token": token},
         )
         urllib.request.urlopen(req, timeout=2).read()
     except Exception:
@@ -117,9 +133,10 @@ class LiveRunner:
         self.picker = UniversePicker()
         self.cycle_seconds = cycle_seconds
         self.account_mode = (_pick(rt, "trading_account_mode", env="TRADING_ACCOUNT_MODE") or "DEMO").upper()
-        self.master_bot_on = _env_bool("MASTER_BOT_ENABLED", True)
+        self.master_bot_on = _env_bool("MASTER_BOT_ENABLED", False)
         if "master_bot_enabled" in rt:
             self.master_bot_on = bool(rt.get("master_bot_enabled"))
+        self._ops_poll_fail_count = 0
         self._running = False
         self._flatten_seen = 0
         self.broker = None
@@ -132,7 +149,7 @@ class LiveRunner:
         self.trade_manager = None
         self.regime = MarketRegimeEngine()
         self.calendar = SessionCalendar()
-        self.news = NewsBlackoutGuard()
+        self.news = NewsBlackoutGuard(calendar_path=default_calendar_path())
         self.news.load_from_disk()
         self.journal = TradeJournal()
         self.brain = DecisionBrain()
@@ -264,7 +281,9 @@ class LiveRunner:
         rt = _load_runtime()
         self._apply_runtime(rt)
         self.news.load_from_disk()
-        self.master_bot_on, flatten_seq = _poll_ops(self.master_bot_on)
+        self.master_bot_on, flatten_seq, self._ops_poll_fail_count = _poll_ops(
+            self.master_bot_on, self._ops_poll_fail_count
+        )
         if flatten_seq > self._flatten_seen and self.trade_manager is not None:
             self._flatten_seen = flatten_seq
             acts = await self.trade_manager.flatten_all("ops flatten")
@@ -371,6 +390,21 @@ class LiveRunner:
             overlap=overlap, swap_r=overnight_swap_r(symbol=symbol, now=None),
             session_ok=True, universe_score=universe_score,
         )
+        brains = (result.signal.meta or {}).get("brains") if result.signal and result.signal.meta else None
+        if brains:
+            try:
+                record_decision(
+                    symbol=symbol,
+                    side=result.signal.side.value if result.signal else None,
+                    allow=result.risk_allowed and not result.skipped_reason,
+                    size_mult=result.size_mult,
+                    p_win=result.p_win,
+                    expected_r=result.expected_r,
+                    skipped_reason=result.skipped_reason,
+                    brains=brains,
+                )
+            except Exception:
+                logger.exception("decision log record failed for %s", symbol)
         if result.skipped_reason:
             logger.debug("%s skipped: %s", symbol, result.skipped_reason)
             return
