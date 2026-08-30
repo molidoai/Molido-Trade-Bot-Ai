@@ -67,11 +67,11 @@ logs/
 *.log
 
 # Backtest results / large data
-data/raw/
-data/processed/
+data/
 backtest_results/
 *.parquet
 *.h5
+*.tsbuildinfo
 
 # MT5 / Broker
 *.ex5
