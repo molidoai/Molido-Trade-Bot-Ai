@@ -172,11 +172,22 @@ class RiskEngine:
             checks["cooldown"] = True
 
         risk_mult = 1.0
+        ml_high_vol = (
+            ctx.ml_high_vol_prob is not None and ctx.ml_high_vol_prob >= limits.ml_high_vol_threshold
+        )
         if ctx.regime in ("High Volatility", "Extreme Volatility"):
             if ctx.regime == "Extreme Volatility" and limits.extreme_vol_block:
                 return self._deny("Extreme volatility - new entries blocked", checks)
             risk_mult = limits.high_vol_risk_mult
             reasons.append(f"Risk reduced x{risk_mult} due to {ctx.regime}")
+        elif ml_high_vol:
+            # Same reduction the rule-based regime gets -- validated
+            # (scripts/train_regime_model.py, walk-forward) to have real
+            # skill at *this* specific call, unlike direction, which this
+            # signal is never used for. Only fires when the rule-based
+            # regime hasn't already caught it, so it never stacks.
+            risk_mult = limits.high_vol_risk_mult
+            reasons.append(f"Risk reduced x{risk_mult} due to ML high-vol signal (p={ctx.ml_high_vol_prob:.2f})")
 
         risk_pct = limits.risk_per_trade * risk_mult
         risk_amount = account.equity * risk_pct

@@ -3,6 +3,7 @@ import { FlattenButton } from "./FlattenButton";
 import { BrainPanel } from "./BrainPanel";
 import { AccountControl } from "./AccountControl";
 import { SessionClock } from "./SessionClock";
+import { TVAlertsPanel } from "./TVAlertsPanel";
 
 export default function Page() {
   return (
@@ -32,7 +33,10 @@ export default function Page() {
         <AccountControl />
         <SessionClock />
       </div>
-      <BrainPanel />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <BrainPanel />
+        <TVAlertsPanel />
+      </div>
     </div>
   );
 }

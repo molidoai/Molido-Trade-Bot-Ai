@@ -20,13 +20,35 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from typing import Literal
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import get_settings, Settings
-from app.api.deps import require_admin, require_user
+from app.api.deps import require_admin, get_current_user_id
+from app.db.session import get_db
 from app.models.user import User
 from app.services.ops_notify import notify as telegram_notify
 from app.services import runtime_settings as rs
 
 router = APIRouter(prefix="/ops", tags=["ops"])
+
+
+async def _engine_or_user(
+    x_engine_token: str | None = Header(default=None),
+    settings: Settings = Depends(get_settings),
+    user_id: int | None = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """GET /ops/state and /ops/heartbeat need to be readable both by a
+    logged-in dashboard user AND by trading-engine's own polling loop
+    (runner.py._poll_ops, which has no user session) -- accept either the
+    shared engine token or a real user JWT, never neither."""
+    if x_engine_token and settings.engine_internal_token and x_engine_token == settings.engine_internal_token:
+        return
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated", headers={"WWW-Authenticate": "Bearer"})
+    user = await db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=401, detail="User not found")
 
 REAL_CONFIRM_TOKEN = "CONFIRM_REAL"
 PROP_CONFIRM_TOKEN = "CONFIRM_PROP"
@@ -123,7 +145,7 @@ def _snapshot(settings: Settings) -> dict:
 @router.get("/state")
 async def ops_state(
     settings: Settings = Depends(get_settings),
-    _user: User = Depends(require_user),
+    _auth: None = Depends(_engine_or_user),
 ):
     _maybe_notify_dead()
     return _snapshot(settings)
@@ -132,7 +154,7 @@ async def ops_state(
 @router.get("/heartbeat")
 async def get_heartbeat(
     settings: Settings = Depends(get_settings),
-    _user: User = Depends(require_user),
+    _auth: None = Depends(_engine_or_user),
 ):
     _maybe_notify_dead()
     out = _snapshot(settings)
