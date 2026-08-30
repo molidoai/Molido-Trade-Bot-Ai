@@ -2,6 +2,7 @@ import { TiltCard } from "@/components/ui/TiltCard";
 import { FlattenButton } from "./FlattenButton";
 import { BrainPanel } from "./BrainPanel";
 import { AccountControl } from "./AccountControl";
+import { SessionClock } from "./SessionClock";
 
 export default function Page() {
   return (
@@ -29,8 +30,9 @@ export default function Page() {
       </div>
       <div className="grid gap-6 lg:grid-cols-2">
         <AccountControl />
-        <BrainPanel />
+        <SessionClock />
       </div>
+      <BrainPanel />
     </div>
   );
 }

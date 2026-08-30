@@ -14,7 +14,8 @@ def test_auto_and_empty_use_universe():
     assert resolve_universe("") == list(DEFAULT_UNIVERSE)
     assert resolve_universe("EURUSD, GBPUSD") == ["EURUSD", "GBPUSD"]
     assert "XAUUSD" in DEFAULT_UNIVERSE
-    assert len(DEFAULT_UNIVERSE) == 10
+    assert "EURGBP" in DEFAULT_UNIVERSE
+    assert len(DEFAULT_UNIVERSE) == 11
 
 
 def test_never_m1_auto_m15_primary():

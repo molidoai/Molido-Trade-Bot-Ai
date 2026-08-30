@@ -110,11 +110,18 @@ services:
       context: .
       dockerfile: infra/docker/Dockerfile.frontend
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+        # Relative, not an absolute http://localhost:8000/... — Next.js
+        # inlines NEXT_PUBLIC_* into the client-side JS bundle at BUILD time,
+        # so an absolute "localhost" URL means the visiting browser's own
+        # machine, not the server, breaking every API call (including
+        # login) for anyone not physically on the server. A relative path
+        # resolves against whatever origin the browser actually loaded the
+        # page from, and nginx already proxies /api/ to the api service.
+        NEXT_PUBLIC_API_URL: /api/v1
     container_name: molido-web
     restart: unless-stopped
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+      NEXT_PUBLIC_API_URL: /api/v1
     ports:
       - "127.0.0.1:3000:3000"
     depends_on:

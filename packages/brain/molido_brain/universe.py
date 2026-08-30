@@ -21,6 +21,7 @@ DEFAULT_UNIVERSE: tuple[str, ...] = (
     "NZDUSD",
     "EURJPY",
     "GBPJPY",
+    "EURGBP",
     "XAUUSD",
 )
 
