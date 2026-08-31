@@ -41,6 +41,10 @@ class SessionCalendar:
     """Was this FX market open at this instant, and which liquidity sessions?"""
 
     def __init__(self, block_weekends: bool = True, overlap_only: bool = True):
+        # Kept for backwards compatibility with existing callers (e.g.
+        # TradingHoursGuard) -- Sat/pre-17:00-Sun are always closed
+        # regardless of this flag's value; there is no "allow weekends"
+        # mode, so this no longer changes behavior either way.
         self.block_weekends = block_weekends
         self.overlap_only = overlap_only
 
@@ -51,17 +55,20 @@ class SessionCalendar:
         return now.astimezone(NY)
 
     def is_fx_week_open(self, now: datetime | None = None) -> tuple[bool, str]:
+        """FX week runs Sunday 17:00 NY -> Friday 17:00 NY. The three checks
+        below are the complete, correctly-scoped closed window; there is
+        deliberately no additional `wd >= 5` catch-all -- a previous version
+        had one and it accidentally closed all of Sunday including *after*
+        17:00, silently skipping the Sydney/Tokyo open every single week."""
         ny = self.now_ny(now)
         wd = ny.weekday()  # Mon=0
         t = ny.time()
+        if wd == 4 and t >= time(17, 0):
+            return False, "Friday after NY 17:00 - FX closed"
         if wd == 5:
             return False, "Saturday - FX closed"
         if wd == 6 and t < time(17, 0):
             return False, "Sunday before NY 17:00 - FX closed"
-        if wd == 4 and t >= time(17, 0):
-            return False, "Friday after NY 17:00 - FX closed"
-        if self.block_weekends and wd >= 5:
-            return False, "Weekend"
         return True, "FX week open"
 
     def active_sessions(self, now: datetime | None = None) -> list[str]:
