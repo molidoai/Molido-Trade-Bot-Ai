@@ -48,6 +48,10 @@ class RiskLimits:
     pause_on_negative_journal: bool = True
     dead_atr_ratio: float = 0.0003
     atr_vs_stop_max: float = 1.2
+    # How far the live price may drift from the signal's entry before the
+    # setup is considered stale, as a fraction of the stop distance.
+    # Beyond this we skip rather than chase the move.
+    max_entry_drift_r: float = 0.5
 
 
 @dataclass

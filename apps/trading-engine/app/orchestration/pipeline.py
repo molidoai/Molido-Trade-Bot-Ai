@@ -29,9 +29,10 @@ except ImportError:
     correlated_block = None  # type: ignore
     default_calendar_path = None  # type: ignore
 try:
-    from molido_execution.limit_entry import entry_limit_price
+    from molido_execution.limit_entry import entry_limit_price, shift_stops_to_price
 except ImportError:
     entry_limit_price = None  # type: ignore
+    shift_stops_to_price = None  # type: ignore
 try:
     from molido_brain.swap import overnight_swap_r
 except ImportError:
@@ -309,6 +310,44 @@ class TradingPipeline:
                 )
 
         limits = self.risk.limits
+
+        if not final.stop_loss:
+            self._journal("skip", symbol=symbol, reason="mandatory SL missing", p_win=p_win)
+            return PipelineResult(
+                signal=final, skipped_reason="mandatory SL missing",
+                p_win=p_win, expected_r=expected_r, size_mult=size_mult,
+            )
+
+        # The strategy anchors entry/SL/TP to the last closed candle, but the
+        # order goes in at the live bid/ask. Resolve the real order price
+        # first, then move SL and TP by exactly the same drift, so the stop
+        # distance the risk engine sizes against is the one actually sent.
+        # Without this the intended R:R silently degrades as price moves, and
+        # once price passes the take-profit the broker rejects the whole
+        # order with retcode 10016 "Invalid stops".
+        price = None
+        if entry_limit_price is not None:
+            price = entry_limit_price(final.side.value, tick)
+        elif tick is not None:
+            price = getattr(tick, "bid" if final.side == SignalSide.BUY else "ask", None)
+        if price is None:
+            self._journal("skip", symbol=symbol, reason="no bid/ask for LIMIT entry", p_win=p_win)
+            return PipelineResult(
+                signal=final, skipped_reason="no bid/ask for LIMIT entry",
+                p_win=p_win, expected_r=expected_r, size_mult=size_mult,
+            )
+
+        order_sl, order_tp, drift, drift_reject = shift_stops_to_price(
+            final.entry, final.stop_loss, final.take_profit, price,
+            max_drift_r=getattr(limits, "max_entry_drift_r", 0.5),
+        )
+        if drift_reject:
+            self._journal("skip", symbol=symbol, reason=drift_reject, p_win=p_win)
+            return PipelineResult(
+                signal=final, skipped_reason=drift_reject,
+                p_win=p_win, expected_r=expected_r, size_mult=size_mult,
+            )
+
         ml_high_vol_prob = None
         if get_ml_vol_detector is not None:
             try:
@@ -318,9 +357,9 @@ class TradingPipeline:
         risk_ctx = RiskContext(
             symbol=symbol,
             side=final.side.value,
-            entry=final.entry,
-            stop_loss=final.stop_loss,
-            take_profit=final.take_profit,
+            entry=price,
+            stop_loss=order_sl,
+            take_profit=order_tp,
             signal_score=final.score,
             risk_reward=final.risk_reward,
             spread_points=spread_pts,
@@ -378,42 +417,14 @@ class TradingPipeline:
         if p_win is not None:
             comment += f"|p={p_win:.2f}"
 
-        if not final.stop_loss:
-            self._journal("skip", symbol=symbol, reason="mandatory SL missing", p_win=p_win)
-            return PipelineResult(
-                signal=final,
-                skipped_reason="mandatory SL missing",
-                p_win=p_win,
-                expected_r=expected_r,
-                size_mult=size_mult,
-            )
-
-        price = None
-        if entry_limit_price is not None:
-            price = entry_limit_price(final.side.value, tick)
-        elif tick is not None:
-            if final.side == SignalSide.BUY:
-                price = getattr(tick, "bid", None)
-            else:
-                price = getattr(tick, "ask", None)
-        if price is None:
-            self._journal("skip", symbol=symbol, reason="no bid/ask for LIMIT entry", p_win=p_win)
-            return PipelineResult(
-                signal=final,
-                skipped_reason="no bid/ask for LIMIT entry",
-                p_win=p_win,
-                expected_r=expected_r,
-                size_mult=size_mult,
-            )
-
         req = ExecRequest(
             symbol=symbol,
             side=final.side.value,
             volume=lot,
             order_type="LIMIT",
             price=price,
-            stop_loss=final.stop_loss,
-            take_profit=final.take_profit,
+            stop_loss=order_sl,
+            take_profit=order_tp,
             client_order_id=str(uuid.uuid4()),
             strategy=final.strategy,
             signal_score=final.score,
