@@ -76,6 +76,23 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _overlap_only(rt: dict) -> bool:
+    """New entries restricted to the London/NY overlap only?
+
+    Defaults to False: entries are allowed during any active session
+    (Tokyo/London/NY), roughly 17h/day instead of the 4h overlap window.
+    Overlap-only is the more conservative setting (tightest spreads, deepest
+    liquidity) and can be re-enabled per-deployment without a rebuild via
+    the session_overlap_only runtime setting or SESSION_OVERLAP_ONLY env.
+    """
+    val = rt.get("session_overlap_only")
+    if val is None:
+        return _env_bool("SESSION_OVERLAP_ONLY", False)
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
 # If the ops API can't be reached for this many consecutive cycles, we can no
 # longer confirm the operator's intent — fail closed (force master OFF)
 # rather than keep trading blind on a possibly-stale in-memory value.
@@ -151,7 +168,7 @@ class LiveRunner:
         self.market_data = None
         self.trade_manager = None
         self.regime = MarketRegimeEngine()
-        self.calendar = SessionCalendar()
+        self.calendar = SessionCalendar(overlap_only=_overlap_only(rt))
         self.news = NewsBlackoutGuard(calendar_path=default_calendar_path())
         self.news.load_from_disk()
         self.journal = TradeJournal()
@@ -197,6 +214,7 @@ class LiveRunner:
         self.timeframe = TimeFrame.M15
         if "master_bot_enabled" in rt:
             self.master_bot_on = bool(rt.get("master_bot_enabled"))
+        self.calendar.overlap_only = _overlap_only(rt)
         self.risk.limits = self._limits_from(rt)
         if self.pipeline is not None:
             self.pipeline.account_mode = mode

@@ -35,6 +35,7 @@ DEFAULTS = {
     "max_drawdown": 0.04,
     "max_open_positions": 3,
     "max_entries_per_day": 4,
+    "session_overlap_only": False,
     "strategy_names": ["TrendFollowing"],
 }
 
