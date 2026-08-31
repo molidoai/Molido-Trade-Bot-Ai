@@ -14,6 +14,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+from molido_shared.volatility import scale_atr_threshold
 from molido_brain.features import extract_features
 from molido_brain.swap import overnight_swap_r, veto_weekend_hold
 
@@ -354,16 +355,18 @@ class Brain3Survival:
         daily_pnl: float | None = None,
         equity: float | None = None,
         daily_loss_limit: float | None = None,
+        timeframe: Any = None,
     ) -> BrainVote:
         reasons = ["brain3=survival"]
         size = 1.0
         limit = float(daily_loss_limit if daily_loss_limit is not None else self.daily_loss_limit)
 
         if snap.atr and snap.close:
-            if snap.atr / snap.close < self.dead_atr_ratio:
+            dead = scale_atr_threshold(self.dead_atr_ratio, timeframe)
+            if snap.atr / snap.close < dead:
                 return BrainVote(
                     "survival", False, 0.0,
-                    reasons + [f"hard veto: ATR dead ({snap.atr / snap.close:.6f} < {self.dead_atr_ratio})"],
+                    reasons + [f"hard veto: ATR dead ({snap.atr / snap.close:.6f} < {dead:.6f}, tf={timeframe or 'n/a'})"],
                 )
         if snap.atr and snap.stop_distance:
             if snap.atr > self.atr_vs_stop_max * snap.stop_distance:

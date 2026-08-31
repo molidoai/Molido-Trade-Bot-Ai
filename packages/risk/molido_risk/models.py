@@ -85,6 +85,10 @@ class RiskContext:
     risk_reward: float | None = None
     spread_points: float | None = None
     atr: float | None = None
+    # Timeframe `atr` was measured on -- dead_atr_ratio is calibrated for
+    # M15, so the gate rescales it for other bar sizes (see
+    # molido_shared.volatility). None keeps the unscaled M15 behavior.
+    timeframe: str | None = None
     regime: str | None = None
     # P(model's "HighVol" label) from molido_regime.MLVolatilityDetector, or
     # None if no model is loaded / not enough history -- None must behave

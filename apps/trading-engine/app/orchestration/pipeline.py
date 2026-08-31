@@ -259,6 +259,7 @@ class TradingPipeline:
                 daily_pnl=getattr(account_state, "daily_pnl", None),
                 equity=getattr(account_state, "equity", None),
                 daily_loss_limit=getattr(self.risk.limits, "max_daily_loss", 0.02),
+                timeframe=timeframe,
             )
             p_win = verdict.p_win
             expected_r = verdict.expected_r
@@ -324,6 +325,7 @@ class TradingPipeline:
             risk_reward=final.risk_reward,
             spread_points=spread_pts,
             atr=atr_val,
+            timeframe=getattr(timeframe, "value", timeframe),
             regime=regime,
             ml_high_vol_prob=ml_high_vol_prob,
             account=account_state,

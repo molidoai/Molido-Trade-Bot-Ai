@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
+from molido_shared.volatility import scale_atr_threshold
 from molido_risk.models import (
     AccountState,
     RiskContext,
@@ -84,10 +85,12 @@ class RiskEngine:
 
         # ATR gate
         if ctx.atr is not None and ctx.entry:
-            dead = getattr(limits, "dead_atr_ratio", 0.0003)
+            dead = scale_atr_threshold(
+                getattr(limits, "dead_atr_ratio", 0.0003), ctx.timeframe
+            )
             if ctx.entry > 0 and ctx.atr / ctx.entry < dead:
                 return self._deny(
-                    f"ATR/close {ctx.atr / ctx.entry:.6f} < {dead} (dead market)",
+                    f"ATR/close {ctx.atr / ctx.entry:.6f} < {dead:.6f} (dead market, tf={ctx.timeframe or 'n/a'})",
                     checks,
                 )
             cap = getattr(limits, "atr_vs_stop_max", 1.2)
