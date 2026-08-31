@@ -40,6 +40,7 @@ from app.orchestration.pipeline import TradingPipeline
 from app.data.market_data import MarketDataEngine
 from app.live.alerts import notify as telegram_notify
 from app.live.decision_log import record_decision
+from app.live.status_snapshot import write_status
 
 logger = logging.getLogger(__name__)
 
@@ -307,10 +308,26 @@ class LiveRunner:
             except Exception:
                 logger.exception("manage error on %s", symbol)
         sess_ok, sess_why = self.calendar.allow_new_entries()
+        # Status snapshot every cycle -- session-closed ones included -- so
+        # the dashboard's equity/positions view stays live around the clock.
+        try:
+            snap = await self.portfolio.snapshot()
+            write_status(
+                snapshot=snap,
+                positions=self.positions.get_all() if self.positions else [],
+                master_on=self.master_bot_on,
+                account_mode=self.account_mode,
+                session_note=sess_why,
+                active_sessions=self.calendar.active_sessions(),
+            )
+        except Exception:
+            logger.exception("portfolio status snapshot failed")
+            snap = None
         if not sess_ok:
             logger.info("LIVE session skip: %s", sess_why)
             return
-        snap = await self.portfolio.snapshot()
+        if snap is None:
+            snap = await self.portfolio.snapshot()
         logger.info("LIVE equity=%.2f | positions=%d | DD=%.2f%% | master=%s | sessions=%s", snap.equity, snap.open_positions, snap.drawdown_pct, "ON" if self.master_bot_on else "OFF", ",".join(self.calendar.active_sessions()) or "-")
         stats = self.journal.journal_stats(20)
         if stats and stats["n"] >= 20 and stats["mean_r"] < 0 and self.brain.pause_on_negative_journal:
