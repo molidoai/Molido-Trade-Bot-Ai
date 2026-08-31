@@ -60,6 +60,7 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
+      TZ: ${TZ:-Asia/Tehran}
       RUNTIME_SETTINGS_PATH: /app/data/runtime-settings.json
     volumes:
       - runtime_data:/app/data
@@ -84,12 +85,19 @@ services:
     container_name: molido-engine
     restart: unless-stopped
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      # "host-gateway" resolves to the default docker0 bridge (172.17.0.1),
+      # but this container runs on the project network and Docker isolates
+      # bridges from each other -- on a host where those differ, the MT5
+      # bridge is unreachable. Set MT5_HOST_GATEWAY in .env to this
+      # project network's actual gateway (`docker network inspect
+      # molido_default`) when they differ.
+      - "host.docker.internal:${MT5_HOST_GATEWAY:-host-gateway}"
     env_file:
       - .env
     environment:
       POSTGRES_HOST: postgres
       REDIS_HOST: redis
+      TZ: ${TZ:-Asia/Tehran}
       TRADING_ACCOUNT_MODE: ${TRADING_ACCOUNT_MODE:-DEMO}
       MASTER_BOT_ENABLED: ${MASTER_BOT_ENABLED:-false}
       OPS_STATE_URL: http://api:8000/api/v1/ops/state
@@ -125,6 +133,7 @@ services:
     container_name: molido-web
     restart: unless-stopped
     environment:
+      TZ: ${TZ:-Asia/Tehran}
       NEXT_PUBLIC_API_URL: /api/v1
     ports:
       - "127.0.0.1:3000:3000"
