@@ -48,7 +48,21 @@ def _load_mt5(host: str | None = None, port: int | None = None):
     key = (host, port)
     cached = _MT5_CONNECTIONS.get(key)
     if cached is not None:
-        return cached
+        # A restart of the MT5 terminal / bridge kills the socket but the
+        # facade object stays cached, so every later connect() would get a
+        # dead connection back and fail forever with EOFError("stream has
+        # been closed"). Ping before trusting it; evict on any failure so
+        # the reconnect below builds a fresh one.
+        try:
+            cached._conn.eval("1")
+            return cached
+        except Exception:
+            logger.warning("cached MT5 bridge %s:%s is dead; reconnecting", host, port)
+            _MT5_CONNECTIONS.pop(key, None)
+            try:
+                cached._conn.close()
+            except Exception:
+                pass
     try:
         import rpyc
         class _RpycMT5:
