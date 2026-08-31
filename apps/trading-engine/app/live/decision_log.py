@@ -24,6 +24,7 @@ _MAX_ENTRIES = 30
 
 def record_decision(
     *,
+    path: str | None = None,
     symbol: str,
     side: str | None,
     allow: bool,
@@ -44,21 +45,22 @@ def record_decision(
         "skipped_reason": skipped_reason,
         "brains": brains,
     }
+    target = Path(path) if path else _PATH
     try:
         with _LOCK:
-            _PATH.parent.mkdir(parents=True, exist_ok=True)
+            target.parent.mkdir(parents=True, exist_ok=True)
             try:
-                existing = json.loads(_PATH.read_text(encoding="utf-8"))
+                existing = json.loads(target.read_text(encoding="utf-8"))
                 entries = existing.get("decisions", []) if isinstance(existing, dict) else []
             except Exception:
                 entries = []
             entries.append(entry)
             entries = entries[-_MAX_ENTRIES:]
-            tmp = _PATH.with_suffix(".tmp")
+            tmp = target.with_suffix(".tmp")
             tmp.write_text(
                 json.dumps({"updated_at": entry["ts"], "decisions": entries}, indent=2),
                 encoding="utf-8",
             )
-            tmp.replace(_PATH)
+            tmp.replace(target)
     except Exception:
         logger.exception("decision log write failed")

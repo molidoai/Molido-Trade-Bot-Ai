@@ -24,6 +24,8 @@ def create_broker(
     path: str | None = None,
     initial_balance: float = 10_000.0,
     account_type: str = "DEMO",
+    rpc_host: str | None = None,
+    rpc_port: int | None = None,
 ) -> BrokerAdapter:
     """
     Factory function.
@@ -44,6 +46,10 @@ def create_broker(
             password=password,
             server=server,
             path=path,
+            # Which MT5 terminal bridge this account uses; None falls back to
+            # the MT5_RPC_HOST/PORT env vars for single-account setups.
+            rpc_host=rpc_host,
+            rpc_port=rpc_port,
         )
 
     raise ValueError(f"Unknown broker type: {broker_type}")

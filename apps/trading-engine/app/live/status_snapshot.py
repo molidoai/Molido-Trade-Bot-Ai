@@ -22,6 +22,9 @@ _LOCK = Lock()
 
 def write_status(
     *,
+    path: str | None = None,
+    account_id: str = "default",
+    account_name: str = "Default",
     snapshot,  # molido_portfolio.models.PortfolioSnapshot
     positions,  # list[molido_portfolio.models.ManagedPosition]
     master_on: bool,
@@ -30,6 +33,8 @@ def write_status(
     active_sessions: list[str],
 ) -> None:
     payload = {
+        "account_id": account_id,
+        "account_name": account_name,
         "as_of": datetime.now(timezone.utc).isoformat(),
         "master_on": bool(master_on),
         "account_mode": account_mode,
@@ -61,11 +66,12 @@ def write_status(
             for p in positions
         ],
     }
+    target = Path(path) if path else _PATH
     try:
         with _LOCK:
-            _PATH.parent.mkdir(parents=True, exist_ok=True)
-            tmp = _PATH.with_suffix(".tmp")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(".tmp")
             tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            tmp.replace(_PATH)
+            tmp.replace(target)
     except Exception:
         logger.exception("portfolio status write failed")
