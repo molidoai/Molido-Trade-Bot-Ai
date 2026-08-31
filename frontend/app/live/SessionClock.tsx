@@ -67,26 +67,23 @@ type Status = {
 };
 
 // Faithful port of SessionCalendar.is_fx_week_open / allow_new_entries.
-// Note: in the Python source, Sat and Sun are unconditionally closed
-// (the trailing `wd >= 5` check catches all of Sunday too, not just
-// before 17:00 NY — Sunday doesn't reopen the week here) — this mirrors
-// that exactly rather than "fixing" it, since the dashboard should show
-// what the engine actually does.
+// FX week runs Sunday 17:00 NY -> Friday 17:00 NY; these three checks are
+// the complete closed window (fixed 2026-08-31: an earlier version of the
+// Python source, and this port, had an extra `wd >= 5` catch-all that
+// accidentally closed all of Sunday including *after* 17:00, silently
+// skipping the Sydney/Tokyo open every week).
 function marketStatus(nyP: Parts): Status {
   const wd = pyWeekday(nyP);
   const t = minuteOfDay(nyP);
 
+  if (wd === 4 && t >= 17 * 60) {
+    return { weekOpen: false, closedReason: "جمعه، بعد از ۱۷:۰۰ نیویورک — بسته", allowEntries: false, entryReason: "", active: [] };
+  }
   if (wd === 5) {
     return { weekOpen: false, closedReason: "شنبه — فارکس بسته", allowEntries: false, entryReason: "", active: [] };
   }
   if (wd === 6 && t < 17 * 60) {
     return { weekOpen: false, closedReason: "یکشنبه، قبل از ۱۷:۰۰ نیویورک — بسته", allowEntries: false, entryReason: "", active: [] };
-  }
-  if (wd === 4 && t >= 17 * 60) {
-    return { weekOpen: false, closedReason: "جمعه، بعد از ۱۷:۰۰ نیویورک — بسته", allowEntries: false, entryReason: "", active: [] };
-  }
-  if (wd >= 5) {
-    return { weekOpen: false, closedReason: "آخر هفته — بسته", allowEntries: false, entryReason: "", active: [] };
   }
 
   const active = SESSIONS.filter((w) => inWindow(t, w)).map((w) => w.key);
