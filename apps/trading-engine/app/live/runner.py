@@ -336,13 +336,13 @@ class LiveRunner:
             acts = await self.trade_manager.flatten_all("ops flatten")
             for a in acts:
                 self.journal.append("flatten", reason="ops flatten", detail=a)
-            telegram_notify("Molido flatten-all requested")
+            telegram_notify("🔻 درخواست بستن همه پوزیشن‌ها")
         flat_ok, flat_why = self.calendar.should_flatten()
         if flat_ok and self.trade_manager is not None and self.positions and self.positions.count() > 0:
             acts = await self.trade_manager.flatten_all(flat_why)
             for a in acts:
                 self.journal.append("flatten", reason=flat_why, detail=a)
-            telegram_notify(f"Molido flatten: {flat_why}")
+            telegram_notify(f"🔻 بستن پوزیشن‌ها: {flat_why}")
         open_syms = []
         if self.positions is not None:
             open_syms = list({p.symbol for p in self.positions.get_all()})
@@ -478,7 +478,14 @@ class LiveRunner:
         if result.exec_result and result.exec_result.success:
             side = result.signal.side.value if result.signal else "?"
             logger.info("%s LIVE FILL %s %.2f lots @ %s | tf=%s | regime=%s", symbol, side, result.lot_size, result.exec_result.fill_price, trade_tf.value, regime)
-            telegram_notify(f"Molido FILL {symbol} {side} {result.lot_size} @ {result.exec_result.fill_price} tf={trade_tf.value} regime={regime}")
+            telegram_notify(
+                "✅ <b>معامله باز شد</b>\n"
+                f"نماد: {symbol}\n"
+                f"جهت: {side}\n"
+                f"حجم: {result.lot_size} لات\n"
+                f"قیمت: {result.exec_result.fill_price}\n"
+                f"تایم‌فریم: {trade_tf.value} | رژیم بازار: {regime}"
+            )
         elif result.exec_result and not result.exec_result.success:
             logger.warning("%s exec failed: %s", symbol, result.exec_result.message)
 

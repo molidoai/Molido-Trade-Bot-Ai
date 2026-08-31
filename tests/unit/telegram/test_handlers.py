@@ -8,9 +8,11 @@ async def test_start_and_status():
     router = CommandRouter(state, auth_is_admin=lambda c: c == "1")
     text = await router.handle("1", "/start")
     assert "Molido" in text
+    # Command names stay latin even in the Persian UI -- users type them.
+    assert "/status" in text
     text = await router.handle("1", "/status")
     assert "DEMO" in text
-    assert "OFF" in text
+    assert "خاموش" in text          # master OFF, rendered in Persian
 
 
 @pytest.mark.asyncio
@@ -47,7 +49,7 @@ async def test_flatten_and_off_admin():
     msg = await router.handle("other", "/flatten")
     assert "⛔" in msg or "ادمین" in msg
     msg = await router.handle("admin", "/flatten")
-    assert "Flatten" in msg or "flatten" in msg.lower()
+    assert "بستن همه پوزیشن" in msg
     assert called["flatten"] == 1
     msg = await router.handle("admin", "/off")
     assert state.master_bot_on is False
