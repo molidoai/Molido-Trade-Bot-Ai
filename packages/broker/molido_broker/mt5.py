@@ -442,7 +442,15 @@ class MT5BrokerAdapter(BrokerAdapter):
                 "type_time": self._mt5.ORDER_TIME_GTC,
                 "type_filling": _filling(self._mt5, info),
             }
-            logger.info("MT5 place_order payload comment=%s type=%s %s", payload["comment"], request.order_type, request.symbol)
+            # sl/tp/price included: retcode 10016 "Invalid stops" is about
+            # these three and their relationship to the market, and without
+            # them in the log there is nothing to diagnose from.
+            logger.info(
+                "MT5 place_order %s %s type=%s price=%s sl=%s tp=%s bid=%s ask=%s stops_level=%s comment=%s",
+                request.symbol, request.side, request.order_type, payload["price"],
+                payload["sl"], payload["tp"], tick.bid, tick.ask,
+                getattr(info, "trade_stops_level", None), payload["comment"],
+            )
             res = self._send(payload)
             logger.info("MT5 place_order result %s", res.message)
             return res
