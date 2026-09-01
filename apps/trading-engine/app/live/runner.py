@@ -7,6 +7,7 @@ No manual pair picking. Heartbeat each cycle. Three numeric brains via pipeline.
 
 from __future__ import annotations
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
@@ -178,6 +179,19 @@ class LiveRunner:
         if "master_bot_enabled" in acc_settings:
             self.master_bot_on = bool(acc_settings.get("master_bot_enabled"))
         self._ops_poll_fail_count = 0
+        # Seconds to add to real UTC to get the broker's clock. MT5 stamps
+        # candles in broker-local time but the Candle carries no zone, so
+        # comparing them against datetime.now(utc) silently treats them as UTC.
+        # On MetaQuotes-Demo (UTC+3) that made closed_bars() discard every bar
+        # of the last three hours as "not yet closed": measured live, it kept
+        # 13 fewer bars than it should and handed the strategies a candle from
+        # 10:00 while the market was at 13:15. Every signal -- including the
+        # only six orders this bot has ever placed -- was computed on
+        # three-hour-old prices, and the resulting entry was then rejected by
+        # the drift guard, which is 30% of all decisions in the journal.
+        # Learned from tick timestamps rather than assumed, so it follows the
+        # broker across DST and works for any server.
+        self._broker_clock_offset = 0.0
         self._running = False
         self._flatten_seen = 0
         self.broker = None
@@ -455,6 +469,26 @@ class LiveRunner:
                 except Exception:
                     logger.exception("LIVE cycle error on %s %s", cand.symbol, tf.value)
 
+    def _broker_now(self) -> datetime:
+        """Now, on the broker's clock -- the frame candle stamps are in."""
+        return datetime.now(timezone.utc) + timedelta(seconds=self._broker_clock_offset)
+
+    def _learn_clock_offset(self, tick) -> None:
+        """Track broker-vs-UTC drift from tick timestamps."""
+        t = getattr(tick, "time", None)
+        if t is None:
+            return
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        delta = (t - datetime.now(timezone.utc)).total_seconds()
+        # Ticks can be a little stale on a quiet symbol; only whole-hour-ish
+        # gaps are a real timezone difference, and never trust a wild value.
+        if abs(delta) < 120 or abs(delta) > 60 * 60 * 26:
+            return
+        if abs(delta - self._broker_clock_offset) > 60:
+            logger.info("[%s] broker clock offset %+.2fh vs UTC", self.log_tag, delta / 3600.0)
+        self._broker_clock_offset = delta
+
     async def _pick_symbols(self, open_syms: list[str], *, overlap: bool, session_ok: bool) -> list:
         ticks = {}
         spread_order = []
@@ -468,6 +502,7 @@ class LiveRunner:
                 tick = None
             ticks[symbol] = tick
             if tick is not None:
+                self._learn_clock_offset(tick)
                 rel = tick.spread / tick.mid if tick.mid else 9
                 spread_order.append((rel, symbol))
         spread_order.sort()
@@ -476,7 +511,7 @@ class LiveRunner:
         for symbol in h1_targets:
             try:
                 h1_raw = await self.market_data.get_candles(symbol, TimeFrame.H1, count=80, use_cache=True)
-                h1_bars = closed_bars(h1_raw, min_bars=30)
+                h1_bars = closed_bars(h1_raw, as_of=self._broker_now(), min_bars=30)
                 h1_map[symbol] = h1_side_from_bars(h1_bars)
             except (InsufficientDataError, Exception):
                 h1_map[symbol] = None
@@ -506,7 +541,7 @@ class LiveRunner:
         if not raw:
             return
         try:
-            candles = closed_bars(raw, min_bars=30)
+            candles = closed_bars(raw, as_of=self._broker_now(), min_bars=30)
         except InsufficientDataError as exc:
             logger.debug("%s PIT: %s", symbol, exc)
             return
@@ -566,7 +601,7 @@ class LiveRunner:
             return
         raw = await self.market_data.get_candles(symbol, self.timeframe, count=40)
         try:
-            candles = closed_bars(raw, min_bars=8) if raw else []
+            candles = closed_bars(raw, as_of=self._broker_now(), min_bars=8) if raw else []
         except InsufficientDataError:
             candles = []
         atr = None

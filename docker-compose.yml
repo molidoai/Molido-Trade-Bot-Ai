@@ -117,6 +117,33 @@ services:
           cpus: "1.5"
           memory: 1G
 
+  telegram-bot:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.telegram
+    container_name: molido-telegram
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      TZ: ${TZ:-Asia/Tehran}
+      RUNTIME_SETTINGS_PATH: /app/data/runtime-settings.json
+      # Control commands go through the API's ops routes, which enforce the
+      # confirm-token gates -- the bot never touches the engine directly.
+      MOLIDO_API_URL: http://api:8000
+    volumes:
+      # Read-only: the bot needs the token and chat ids the dashboard saved,
+      # and must never be able to rewrite trading settings.
+      - runtime_data:/app/data:ro
+    depends_on:
+      api:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 192M
+
   frontend:
     build:
       context: .

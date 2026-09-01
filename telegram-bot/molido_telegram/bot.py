@@ -7,6 +7,7 @@ Requires TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID in env.
 
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import os
 
@@ -75,14 +76,50 @@ class TelegramBot:
         await self.client.send_message(chat_id, reply)
 
 
+def _runtime_settings() -> dict:
+    """Dashboard-managed settings, shared with the engine over the data volume."""
+    path = os.getenv("RUNTIME_SETTINGS_PATH", "/app/data/runtime-settings.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception:
+        logger.exception("runtime settings unreadable: %s", path)
+        return {}
+
+
+def _setting(rt: dict, key: str, env: str) -> str:
+    """Runtime settings win over env. The token and chat ids are entered in the
+    dashboard and persisted to runtime-settings.json; reading only the
+    environment meant the bot could not be configured from the UI at all.
+    "••••" is the masked placeholder the settings API returns -- never a value.
+    """
+    val = str(rt.get(key) or "").strip()
+    if val and val != "••••":
+        return val
+    return (os.getenv(env) or "").strip()
+
+
 async def main():
     logging.basicConfig(level=logging.INFO)
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    admin = os.getenv("TELEGRAM_ADMIN_CHAT_ID", "")
-    allowed = [x.strip() for x in os.getenv("TELEGRAM_ALLOWED_CHAT_IDS", "").split(",") if x.strip()]
-    if not token or not admin:
-        print("Set TELEGRAM_BOT_TOKEN and TELEGRAM_ADMIN_CHAT_ID")
-        return
+    # Re-read on every attempt so entering the token in the dashboard starts
+    # the bot without a container restart.
+    while True:
+        rt = _runtime_settings()
+        token = _setting(rt, "telegram_bot_token", "TELEGRAM_BOT_TOKEN")
+        admin = _setting(rt, "telegram_admin_chat_id", "TELEGRAM_ADMIN_CHAT_ID")
+        allowed = [
+            x.strip()
+            for x in _setting(rt, "telegram_allowed_chat_ids", "TELEGRAM_ALLOWED_CHAT_IDS").replace(";", ",").split(",")
+            if x.strip()
+        ]
+        if token and admin:
+            break
+        logger.info("telegram token/admin chat id not configured yet; waiting")
+        await asyncio.sleep(30)
+
     bot = TelegramBot(token, admin, allowed or [admin])
     await bot.start()
 
