@@ -294,3 +294,55 @@ def confirm_text(action: str) -> str:
         f"{label}\n\n"
         "این عمل روی حساب زنده اثر دارد."
     )
+
+
+# --- Reply keyboard -------------------------------------------------------
+# The persistent keyboard that sits under the message box, rather than glass
+# buttons attached to one message. It stays put, it is thumb-sized, and it
+# does not scroll away up the chat -- for something checked many times a day
+# that matters more than looking tidy.
+#
+# These send ordinary text, so every screen is reachable by tapping AND by
+# typing, and older clients that ignore keyboards still work.
+
+BTN = {
+    "📊 وضعیت": "status",
+    "💰 موجودی": "balance",
+    "📈 پوزیشن‌ها": "positions",
+    "🧠 مغزها": "brains",
+    "🔍 چرا معامله نمی‌کند؟": "why",
+    "⚙️ ریسک": "risk",
+    "🎯 نمادها": "symbols",
+    "👥 حساب‌ها": "accounts",
+    "📜 ژورنال": "journal",
+    "🔄 منو": "menu",
+    "🛑 کنترل": "control",
+}
+
+REPLY_KB = {
+    "keyboard": [
+        ["📊 وضعیت", "💰 موجودی"],
+        ["📈 پوزیشن‌ها", "🧠 مغزها"],
+        ["🔍 چرا معامله نمی‌کند؟"],
+        ["⚙️ ریسک", "🎯 نمادها"],
+        ["👥 حساب‌ها", "📜 ژورنال"],
+        ["🔄 منو", "🛑 کنترل"],
+    ],
+    "resize_keyboard": True,
+    "is_persistent": True,
+    "input_field_placeholder": "یک دکمه بزن",
+}
+
+
+def view_for_text(text: str) -> str | None:
+    """Map a tapped keyboard button (or typed text) to a view name."""
+    t = (text or "").strip()
+    if t in BTN:
+        return BTN[t]
+    # Tolerate a missing or different emoji: match on the words.
+    bare = "".join(ch for ch in t if ch.isalpha() or ch.isspace() or ch == "‌").strip()
+    for label, view in BTN.items():
+        lb = "".join(ch for ch in label if ch.isalpha() or ch.isspace() or ch == "‌").strip()
+        if bare and bare == lb:
+            return view
+    return None

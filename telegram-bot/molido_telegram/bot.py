@@ -46,11 +46,11 @@ class TelegramBot:
                 {"command": "positions", "description": "open positions"},
                 {"command": "risk", "description": "risk limits"},
             ])
-            body, keyboard = menu.render("menu")
+            body, _ = menu.render("menu")
             await self.client.send_message(
                 self.auth.admin_chat_id,  # type: ignore
                 body,
-                reply_markup=keyboard,
+                reply_markup=menu.REPLY_KB,
             )
         except Exception as e:
             logger.warning("Could not send startup message: %s", e)
@@ -87,15 +87,27 @@ class TelegramBot:
             logger.warning("Unauthorized telegram chat: %s", chat_id)
             return
 
-        # Anything that is not a known command opens the menu, so the bot is
-        # usable without knowing any command at all.
+        # A tapped keyboard button arrives as ordinary text, so route on the
+        # label first. Everything is reachable by tapping or by typing.
+        view = menu.view_for_text(text)
+        if view == "control":
+            if not self.auth.is_admin(chat_id):
+                await self.client.send_message(chat_id, "فقط مدیر", reply_markup=menu.REPLY_KB)
+                return
+            await self.client.send_message(chat_id, menu.CONTROL_TEXT, reply_markup=menu.CONTROL_KB)
+            return
+        if view:
+            body, _ = menu.render(view)
+            await self.client.send_message(chat_id, body, reply_markup=menu.REPLY_KB)
+            return
+
         if text.startswith("/"):
             reply = await self.router.handle(chat_id, text, user)
             if reply:
-                await self.client.send_message(chat_id, reply, reply_markup=menu.MAIN_KB)
+                await self.client.send_message(chat_id, reply, reply_markup=menu.REPLY_KB)
                 return
-        body, keyboard = menu.render("menu")
-        await self.client.send_message(chat_id, body, reply_markup=keyboard)
+        body, _ = menu.render("menu")
+        await self.client.send_message(chat_id, body, reply_markup=menu.REPLY_KB)
 
     async def _process_callback(self, cb: dict) -> None:
         chat_id = str(((cb.get("message") or {}).get("chat") or {}).get("id", ""))
