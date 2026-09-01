@@ -248,6 +248,11 @@ class LiveRunner:
             self.master_bot_on = bool(settings.get("master_bot_enabled"))
         self.calendar.overlap_only = _overlap_only(settings)
         self.risk.limits = self._limits_from(settings)
+        # Keep the universe picker in step with the configured position cap,
+        # and let it propose one extra candidate per cycle -- the brains and
+        # risk engine remain the actual gatekeepers.
+        self.picker.max_open = self.risk.limits.max_open_positions
+        self.picker.max_new = 3
         if self.pipeline is not None:
             self.pipeline.account_mode = self.account_mode
         if self.portfolio is not None:
@@ -384,17 +389,26 @@ class LiveRunner:
         picks = await self._pick_symbols(open_syms, overlap=overlap, session_ok=True)
         logger.info("[%s] picker %s", self.log_tag, ",".join(f"{c.symbol}:{c.score:.2f}" for c in picks) or "(none)")
         for cand in picks:
-            try:
-                await self._evaluate_symbol(
-                    cand.symbol,
-                    resolve_trade_timeframe(self.tf_override, overlap=overlap, spread_ok=cand.spread_ok),
-                    h1_side=cand.h1_side,
-                    overlap=overlap,
-                    tick_spread=cand.spread,
-                    universe_score=cand.score,
-                )
-            except Exception:
-                logger.exception("LIVE cycle error on %s", cand.symbol)
+            # Evaluate on both M15 and M5 rather than a single resolved
+            # timeframe: several times the decision opportunities per cycle.
+            # M5 only when the spread supports it (its tighter stops are more
+            # spread-sensitive); the dead-ATR gate is timeframe-scaled so M5
+            # is judged by an M5-appropriate threshold. If the first
+            # timeframe opens a position, the no-average-down rule blocks a
+            # second entry on the same symbol, so this cannot double up.
+            tfs = [TimeFrame.M15] + ([TimeFrame.M5] if cand.spread_ok else [])
+            for tf in tfs:
+                try:
+                    await self._evaluate_symbol(
+                        cand.symbol,
+                        tf,
+                        h1_side=cand.h1_side,
+                        overlap=overlap,
+                        tick_spread=cand.spread,
+                        universe_score=cand.score,
+                    )
+                except Exception:
+                    logger.exception("LIVE cycle error on %s %s", cand.symbol, tf.value)
 
     async def _pick_symbols(self, open_syms: list[str], *, overlap: bool, session_ok: bool) -> list:
         ticks = {}
