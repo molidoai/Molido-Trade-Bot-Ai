@@ -244,6 +244,16 @@ class TradingPipeline:
 
         snap = await self.portfolio.snapshot()
         account_state = self.portfolio.to_account_state(snap)
+        # Feed the risk engine the losing streak so max_consecutive_losses can
+        # actually fire. Nothing populated this before, so the field sat at 0
+        # forever and the limit was decorative.
+        if self.journal is not None and hasattr(self.journal, "loss_streak"):
+            try:
+                account_state.consecutive_losses = self.journal.loss_streak()
+                if account_state.consecutive_losses and account_state.last_loss_at is None:
+                    account_state.last_loss_at = self.journal.last_close_time()
+            except Exception:
+                logger.debug("loss streak unavailable", exc_info=True)
 
         p_win = None
         expected_r = None

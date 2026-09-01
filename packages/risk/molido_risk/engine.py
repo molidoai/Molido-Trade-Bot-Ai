@@ -132,6 +132,33 @@ class RiskEngine:
             checks["daily_loss"] = False
             return self._deny("Equity is zero or negative", checks)
 
+        # Consecutive-loss brake. max_consecutive_losses and
+        # consecutive_loss_pause_seconds have been in RiskLimits from the
+        # start and no code ever read them, so a losing streak did nothing at
+        # all -- the bot kept taking full-size trades straight through it.
+        # This is the "get more careful after losses" behaviour the limits
+        # always promised.
+        if limits.max_consecutive_losses > 0 and account.consecutive_losses >= limits.max_consecutive_losses:
+            paused = True
+            if account.last_loss_at is not None and limits.consecutive_loss_pause_seconds > 0:
+                last = account.last_loss_at
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+                paused = elapsed < limits.consecutive_loss_pause_seconds
+                remaining = limits.consecutive_loss_pause_seconds - elapsed
+            else:
+                remaining = limits.consecutive_loss_pause_seconds
+            checks["loss_streak"] = not paused
+            if paused:
+                return self._deny(
+                    f"{account.consecutive_losses} consecutive losses; pausing new entries "
+                    f"for another {max(0, remaining) / 60:.0f} min",
+                    checks,
+                )
+        else:
+            checks["loss_streak"] = True
+
         # Prop hard floor, checked before the trailing drawdown rule because
         # it is the one that ends the challenge. Measured from the starting
         # balance the firm set, so it does not move with peak_equity.
