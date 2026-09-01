@@ -458,7 +458,7 @@ class LiveRunner:
                 tfs = [resolve_trade_timeframe(self.tf_override, overlap=overlap, spread_ok=cand.spread_ok)]
             for tf in tfs:
                 try:
-                    await self._evaluate_symbol(
+                    filled = await self._evaluate_symbol(
                         cand.symbol,
                         tf,
                         h1_side=cand.h1_side,
@@ -468,6 +468,17 @@ class LiveRunner:
                     )
                 except Exception:
                     logger.exception("LIVE cycle error on %s %s", cand.symbol, tf.value)
+                    continue
+                if filled:
+                    # One position per symbol per cycle. The picker excludes
+                    # symbols already open, but it reads a snapshot taken at
+                    # the top of the cycle, so M15 and M5 both saw XAUUSD as
+                    # flat and both opened a SELL seconds apart -- two
+                    # positions on one instrument, double the intended risk.
+                    # Sweeping both bar sizes is for more chances to find a
+                    # trade, not for taking the same one twice.
+                    logger.info("[%s] %s filled on %s; skipping its remaining timeframes this cycle", self.log_tag, cand.symbol, tf.value)
+                    break
 
     def _broker_now(self) -> datetime:
         """Now, on the broker's clock -- the frame candle stamps are in."""
@@ -536,10 +547,11 @@ class LiveRunner:
         ranked = self.brain.rank_universe(self.picker.rank(rows))
         return self.picker.select(ranked, open_syms)
 
-    async def _evaluate_symbol(self, symbol: str, trade_tf: TimeFrame, *, h1_side: str | None, overlap: bool, tick_spread: float | None, universe_score: float | None = None) -> None:
+    async def _evaluate_symbol(self, symbol: str, trade_tf: TimeFrame, *, h1_side: str | None, overlap: bool, tick_spread: float | None, universe_score: float | None = None) -> bool:
+        """Evaluate one symbol on one timeframe. True if an order was filled."""
         raw = await self.market_data.get_candles(symbol, trade_tf, count=160, use_cache=False)
         if not raw:
-            return
+            return False
         try:
             candles = closed_bars(raw, as_of=self._broker_now(), min_bars=30)
         except InsufficientDataError as exc:
@@ -579,7 +591,7 @@ class LiveRunner:
                 logger.exception("decision log record failed for %s", symbol)
         if result.skipped_reason:
             logger.debug("%s skipped: %s", symbol, result.skipped_reason)
-            return
+            return False
         if result.exec_result and result.exec_result.success:
             side = result.signal.side.value if result.signal else "?"
             logger.info("%s LIVE FILL %s %.2f lots @ %s | tf=%s | regime=%s", symbol, side, result.lot_size, result.exec_result.fill_price, trade_tf.value, regime)
@@ -591,8 +603,10 @@ class LiveRunner:
                 f"قیمت: {result.exec_result.fill_price}\n"
                 f"تایم‌فریم: {trade_tf.value} | رژیم بازار: {regime}"
             )
+            return True
         elif result.exec_result and not result.exec_result.success:
             logger.warning("%s exec failed: %s", symbol, result.exec_result.message)
+        return False
 
     async def _manage_open(self, symbol: str) -> None:
         if self.trade_manager is None or self.positions is None:
