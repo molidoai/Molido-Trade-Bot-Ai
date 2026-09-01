@@ -50,7 +50,12 @@ jobs:
           SECRET_KEY: ci-secret-key-that-is-long-enough-32chars
           POSTGRES_PASSWORD: ci-postgres-password
           ENGINE_INTERNAL_TOKEN: ci-engine-token-16chars-min
-        run: pytest ../../tests/unit/test_config.py -v
+        # `python -m pytest` rather than `pytest`: working-directory sets the
+        # cwd but pytest builds sys.path from the test file's location, so
+        # apps/api was never importable and `import app` failed. The -m form
+        # puts the cwd on sys.path, which is the whole point of scoping this
+        # step to apps/api.
+        run: python -m pytest ../../tests/unit/test_config.py -v
 
   frontend-build:
     name: Frontend typecheck + build
