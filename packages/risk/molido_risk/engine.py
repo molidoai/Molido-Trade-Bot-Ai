@@ -11,6 +11,10 @@ import math
 from datetime import datetime, timezone
 
 from molido_shared.volatility import scale_atr_threshold
+
+
+def _today():
+    return datetime.now(timezone.utc).date()
 from molido_risk.models import (
     AccountState,
     RiskContext,
@@ -25,6 +29,11 @@ class RiskEngine:
         self.limits = limits or RiskLimits()
         self._circuit_open: bool = False
         self._circuit_reason: str | None = None
+        # Daily limits must clear when the day does. Anything account-level --
+        # max drawdown, a prop floor breach -- stays latched until a human
+        # looks at it.
+        self._circuit_scope: str = "account"
+        self._circuit_day = None
 
     def evaluate(self, ctx: RiskContext) -> RiskResult:
         """
@@ -34,7 +43,15 @@ class RiskEngine:
         reasons: list[str] = []
 
         if self._circuit_open:
-            return self._deny(f"Circuit breaker open: {self._circuit_reason}", checks)
+            # A daily-loss stop is meant to end the day, not the bot. Nothing
+            # in the codebase ever called reset_circuit(), so the first trip
+            # was permanent: the engine kept running, kept logging, and denied
+            # every trade until someone recreated the container. For an
+            # unattended bot that is indistinguishable from being broken.
+            if self._circuit_scope == "daily" and self._circuit_day != _today():
+                self.reset_circuit()
+            else:
+                return self._deny(f"Circuit breaker open: {self._circuit_reason}", checks)
 
         if ctx.is_exit or ctx.side == "EXIT":
             return RiskResult(
@@ -123,7 +140,7 @@ class RiskEngine:
             daily_loss_pct = -account.daily_pnl / account.equity if account.daily_pnl < 0 else 0.0
             checks["daily_loss"] = daily_loss_pct < limits.max_daily_loss
             if not checks["daily_loss"]:
-                self.trip_circuit(f"Daily loss limit hit ({daily_loss_pct:.2%})")
+                self.trip_circuit(f"Daily loss limit hit ({daily_loss_pct:.2%})", scope="daily")
                 return self._deny(
                     f"Daily loss {daily_loss_pct:.2%} >= limit {limits.max_daily_loss:.2%}",
                     checks,
@@ -308,13 +325,18 @@ class RiskEngine:
             },
         )
 
-    def trip_circuit(self, reason: str) -> None:
+    def trip_circuit(self, reason: str, scope: str = "account") -> None:
+        """Open the breaker. scope="daily" clears itself on the next day."""
         self._circuit_open = True
         self._circuit_reason = reason
+        self._circuit_scope = scope
+        self._circuit_day = _today()
 
     def reset_circuit(self) -> None:
         self._circuit_open = False
         self._circuit_reason = None
+        self._circuit_scope = "account"
+        self._circuit_day = None
 
     @property
     def circuit_open(self) -> bool:

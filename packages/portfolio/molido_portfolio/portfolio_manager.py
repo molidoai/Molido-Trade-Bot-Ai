@@ -25,6 +25,8 @@ class PortfolioManager:
         self.account_mode = account_mode
         self._peak_equity: float = 0.0
         self._daily_realized: float = 0.0
+        self._day_open_balance: float | None = None
+        self._day = None
 
     async def snapshot(self) -> PortfolioSnapshot:
         info = await self.broker.get_account_info()
@@ -74,8 +76,6 @@ class PortfolioManager:
 
     def reset_daily(self) -> None:
         self._daily_realized = 0.0
-        self._day_open_balance: float | None = None
-        self._day = None
         self._day_open_balance = None
         self._day = None
 
