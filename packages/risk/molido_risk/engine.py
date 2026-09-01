@@ -132,6 +132,19 @@ class RiskEngine:
             checks["daily_loss"] = False
             return self._deny("Equity is zero or negative", checks)
 
+        # Prop hard floor, checked before the trailing drawdown rule because
+        # it is the one that ends the challenge. Measured from the starting
+        # balance the firm set, so it does not move with peak_equity.
+        floor = limits.prop_initial_balance * (1.0 - limits.prop_max_loss_pct)
+        if limits.prop_initial_balance > 0:
+            checks["prop_floor"] = account.equity > floor
+            if not checks["prop_floor"]:
+                self.trip_circuit(f"Prop max-loss floor hit (equity {account.equity:.2f} <= {floor:.2f})")
+                return self._deny(
+                    f"Equity {account.equity:.2f} at or below prop floor {floor:.2f}",
+                    checks,
+                )
+
         peak = account.peak_equity or account.equity
         if peak > 0:
             dd = (peak - account.equity) / peak

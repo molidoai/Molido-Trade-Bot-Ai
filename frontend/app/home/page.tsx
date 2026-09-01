@@ -1,5 +1,6 @@
 import { fetchHealth, fetchSystemStatus } from "@/lib/api";
 import { TiltCard } from "@/components/ui/TiltCard";
+import { LiveKpis } from "./LiveKpis";
 
 export default async function OverviewPage() {
   const health = await fetchHealth();
@@ -21,14 +22,7 @@ export default async function OverviewPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
-        <Kpi label="موجودی" value="—" sub="منتظر MT5" />
-        <Kpi label="اکوئیتی" value="—" accent="text-cyan-300" />
-        <Kpi label="PnL روزانه" value="$۰.۰۰" />
-        <Kpi label="دراودان" value="۰٪" />
-        <Kpi label="پوزیشن باز" value="۰" />
-        <Kpi label="حالت حساب" value={mode} accent={mode === "REAL" ? "text-rose-300" : "text-emerald-300"} />
-      </div>
+      <LiveKpis mode={mode} />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         <TiltCard className="lg:col-span-2">
@@ -72,16 +66,6 @@ export default async function OverviewPage() {
           </div>
         ))}
       </div>
-    </div>
-  );
-}
-
-function Kpi({ label, value, sub, accent }: { label: string; value: string; sub?: string; accent?: string }) {
-  return (
-    <div className="glass rounded-2xl p-4">
-      <div className="mb-1 text-xs text-slate-400">{label}</div>
-      <div className={`text-xl font-semibold ${accent || ""}`}>{value}</div>
-      {sub && <div className="mt-1 text-xs text-slate-500">{sub}</div>}
     </div>
   );
 }

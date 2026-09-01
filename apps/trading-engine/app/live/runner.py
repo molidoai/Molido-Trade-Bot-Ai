@@ -219,11 +219,26 @@ class LiveRunner:
             max_pos = int(rt.get("max_open_positions", 3))
         except (TypeError, ValueError):
             max_pos = 3
+        def whole(key: str, default: int) -> int:
+            try:
+                return int(rt.get(key, default))
+            except (TypeError, ValueError):
+                return default
+        base = RiskLimits()
         return RiskLimits(
             risk_per_trade=num("default_risk_per_trade", 0.0025),
             max_daily_loss=num("max_daily_loss", 0.02),
+            # These three were settable in the dashboard and persisted to
+            # runtime-settings.json, but never read here -- the engine kept
+            # RiskLimits' own defaults, so changing the daily entry cap or the
+            # weekly loss limit in settings silently did nothing.
+            max_weekly_loss=num("max_weekly_loss", base.max_weekly_loss),
+            max_entries_per_day=max(1, whole("max_entries_per_day", base.max_entries_per_day)),
             max_drawdown=num("max_drawdown", 0.04),
             max_open_positions=max(1, max_pos),
+            # Prop-challenge backstop; 0 (the default) leaves it off.
+            prop_initial_balance=num("prop_initial_balance", 0.0),
+            prop_max_loss_pct=num("prop_max_loss_pct", base.prop_max_loss_pct),
         )
 
     def _resolve_account(self, rt: dict) -> AccountConfig:
