@@ -39,7 +39,13 @@ export default async function OverviewPage() {
             <Row label="Master Bot" ok={master} text={master ? "روشن · LIVE" : "خاموش"} />
             <Row label="Risk Engine" ok text="اجباری · بدون دور زدن" />
             <Row label="Circuit Breaker" ok text="آماده" />
-            <Row label="Database" ok={status?.database === "ok"} text={status?.database || "unknown"} />
+            {/* The API reports "connected"; comparing against "ok" alone left
+                this lamp red even on a healthy database. */}
+            <Row
+              label="Database"
+              ok={status?.database === "connected" || status?.database === "ok"}
+              text={status?.database || "unknown"}
+            />
           </div>
         </TiltCard>
 
