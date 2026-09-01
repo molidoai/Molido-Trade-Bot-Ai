@@ -27,6 +27,8 @@ from molido_portfolio.trade_manager import TradeManager
 from molido_regime import MarketRegimeEngine
 from molido_guards import SessionCalendar, NewsBlackoutGuard, TradingHoursGuard, default_calendar_path
 from molido_strategies.engine import parse_strategy_names
+from molido_brain.experience import Experience
+from molido_brain.autopilot import plan as autopilot_plan, independent_groups
 from molido_brain import (
     DecisionBrain,
     h1_side_from_bars,
@@ -224,6 +226,46 @@ class LiveRunner:
         self.signals = SignalEngine(accept_threshold=55.0)
         self.risk = RiskEngine(self._limits_from(acc_settings))
 
+    def _autopilot(self, rt: dict, limits: RiskLimits) -> RiskLimits:
+        """Derive the sizing limits from evidence rather than from settings.
+
+        On by default. Everything except the daily loss budget is arithmetic
+        once you know that budget and what the journal says about expectancy --
+        and hand-entering them independently is what produced a config where
+        risk per trade equalled the daily cap, so one loss ended the day.
+
+        The daily budget itself stays whatever the settings say (2% default);
+        risk appetite is not a fact the bot can measure, and a bot that picks
+        its own maximum loss has no maximum loss.
+        """
+        if str(rt.get("autopilot", True)).lower() in ("0", "false", "no", "off"):
+            return limits
+        try:
+            exp = Experience.from_journal(self.account.journal_path(DATA_DIR))
+            groups = independent_groups(self.symbols)
+            p = autopilot_plan(
+                max_daily_loss=limits.max_daily_loss,
+                experience=exp,
+                correlation_groups=groups,
+            )
+        except Exception:
+            logger.exception("[%s] autopilot failed; keeping configured limits", self.log_tag)
+            return limits
+
+        changed = (
+            round(limits.risk_per_trade, 5) != round(p.risk_per_trade, 5)
+            or limits.max_entries_per_day != p.max_entries_per_day
+            or limits.max_consecutive_losses != p.max_consecutive_losses
+            or limits.max_open_positions != p.max_open_positions
+        )
+        limits.risk_per_trade = p.risk_per_trade
+        limits.max_entries_per_day = p.max_entries_per_day
+        limits.max_consecutive_losses = p.max_consecutive_losses
+        limits.max_open_positions = p.max_open_positions
+        if changed:
+            logger.info("[%s] autopilot: %s", self.log_tag, " | ".join(p.reasons))
+        return limits
+
     def _limits_from(self, rt: dict) -> RiskLimits:
         def num(key: str, default: float) -> float:
             try:
@@ -290,7 +332,7 @@ class LiveRunner:
         # session config rather than letting it default to overlap-only.
         if self.pipeline is not None and TradingHoursGuard is not None:
             self.pipeline.hours_guard = TradingHoursGuard(overlap_only=overlap_only)
-        self.risk.limits = self._limits_from(settings)
+        self.risk.limits = self._autopilot(settings, self._limits_from(settings))
         # Keep the universe picker in step with the configured position cap,
         # and let it propose one extra candidate per cycle -- the brains and
         # risk engine remain the actual gatekeepers.
