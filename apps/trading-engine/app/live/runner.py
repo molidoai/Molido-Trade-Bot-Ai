@@ -444,11 +444,16 @@ class LiveRunner:
             # setup every cycle: six GBPUSD SELLs in ten minutes on
             # 2026-08-31, one signal turned into six positions. The broker is
             # the authority on what is open; consult it before sizing up.
+            before = {str(p.ticket): p for p in self.positions.get_all()}
             try:
                 await self.positions.sync_from_broker()
             except Exception:
                 logger.exception("[%s] position sync failed; skipping new entries this cycle", self.log_tag)
                 return
+            after = {str(p.ticket) for p in self.positions.get_all()}
+            gone = [t for t in before if t not in after]
+            if gone:
+                await self._record_closes(gone, before)
             open_syms = list({p.symbol for p in self.positions.get_all()})
         for symbol in open_syms:
             try:
@@ -529,6 +534,64 @@ class LiveRunner:
                     # trade, not for taking the same one twice.
                     logger.info("[%s] %s filled on %s; skipping its remaining timeframes this cycle", self.log_tag, cand.symbol, tf.value)
                     break
+
+    async def _record_closes(self, tickets: list[str], before: dict) -> None:
+        """Write a close record, in R, for each position the broker has shut.
+
+        Nothing ever did this. The journal only held skip/veto/accept/fill, so
+        last_closed_r() always returned an empty list -- the loss streak was
+        permanently 0, the experience layer had nothing to learn from, and the
+        autopilot was pinned to its floor for good. Every outcome-driven
+        behaviour in the engine was running on an empty tank.
+
+        A position vanishing between two broker syncs means it closed, by stop,
+        target or hand. Realised profit comes from the broker's own deal
+        history and the risk it was opened with from the fill record, so R is
+        profit / risk -- comparable across symbols and sizes as dollars are not.
+        """
+        try:
+            risk_by_ticket = self.journal.risk_by_ticket()
+        except Exception:
+            logger.debug("could not read fill risks", exc_info=True)
+            risk_by_ticket = {}
+
+        for ticket in tickets:
+            pos = before.get(ticket)
+            symbol = getattr(pos, "symbol", None)
+            profit = None
+            try:
+                deals = self.broker._mt5.history_deals_get(position=int(ticket))
+                if deals:
+                    profit = sum(
+                        float(getattr(d, "profit", 0) or 0)
+                        + float(getattr(d, "swap", 0) or 0)
+                        + float(getattr(d, "commission", 0) or 0)
+                        for d in deals
+                    )
+            except Exception:
+                logger.debug("deal history unavailable for %s", ticket, exc_info=True)
+
+            risk = risk_by_ticket.get(str(ticket))
+            r = round(profit / risk, 3) if (profit is not None and risk) else None
+
+            self.journal.append(
+                "close",
+                ticket=ticket,
+                symbol=symbol,
+                side=getattr(pos, "side", None),
+                profit=None if profit is None else round(profit, 2),
+                risk_amount=risk,
+                r_multiple=r,
+            )
+            if r is None:
+                logger.info("[%s] CLOSED %s %s (result unknown)", self.log_tag, symbol, ticket)
+                continue
+            logger.info("[%s] CLOSED %s %s -> %+.2f (%.2fR)", self.log_tag, symbol, ticket, profit, r)
+            telegram_notify(
+                ("🟢" if r > 0 else "🔴") + " <b>معامله بسته شد</b>" + '\n'
+                + "نماد: " + str(symbol) + '\n'
+                + "نتیجه: %+.2f$  (%+.2fR)" % (profit, r)
+            )
 
     def _broker_now(self) -> datetime:
         """Now, on the broker's clock -- the frame candle stamps are in."""

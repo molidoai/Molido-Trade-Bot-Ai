@@ -117,6 +117,27 @@ class TradeJournal:
         out.reverse()
         return out
 
+    def risk_by_ticket(self) -> dict[str, float]:
+        """Risk amount each open trade was sized with, keyed by ticket.
+
+        A close is only meaningful in R, and R needs the risk the position was
+        opened with -- which lives on the fill record, not on the broker's
+        deal history.
+        """
+        out: dict[str, float] = {}
+        for rec in self._read():
+            if rec.get("event") != "fill":
+                continue
+            ticket = rec.get("ticket")
+            risk = rec.get("risk_amount")
+            if ticket is None or risk is None:
+                continue
+            try:
+                out[str(ticket)] = float(risk)
+            except (TypeError, ValueError):
+                continue
+        return out
+
     def last_close_time(self):
         """Timestamp of the most recent closed trade, for the pause window."""
         from datetime import datetime, timezone

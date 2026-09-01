@@ -483,6 +483,12 @@ class TradingPipeline:
                 mae=0.0,
                 mfe=0.0,
                 entry=exec_res.fill_price,
+                # Recorded so the close can be scored in R later. Without the
+                # risk this trade was opened with, a realised profit is just a
+                # dollar figure and cannot be compared across symbols or sizes.
+                stop_loss=order_sl,
+                risk_amount=round(risk_result.risk_amount * min(1.0, size_mult), 2),
+                strategy=final.strategy,
             )
         else:
             self._journal(
