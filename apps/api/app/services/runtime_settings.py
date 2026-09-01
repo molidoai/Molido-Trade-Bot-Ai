@@ -62,6 +62,14 @@ def load() -> dict:
         except Exception:
             data = {}
         out = dict(DEFAULTS)
+        # Keep keys this service does not manage instead of dropping them.
+        # "accounts" -- the multi-account list written by
+        # /opt/mt5/setup-account2.sh and read by the engine every cycle -- is
+        # not in DEFAULTS, so filtering to DEFAULTS here meant save() rebuilt
+        # the file without it: changing any unrelated setting in the dashboard
+        # silently deleted the second trading account. A settings API must not
+        # destroy state it merely does not recognise.
+        out.update({k: v for k, v in data.items() if k not in DEFAULTS})
         out.update({k: v for k, v in data.items() if k in DEFAULTS})
         if not out.get("mt5_login") and out.get("mt5_real_login"):
             out["mt5_login"] = out["mt5_real_login"]
@@ -98,12 +106,32 @@ def save(data: dict) -> dict:
     return current
 
 
+ACCOUNT_SECRET_KEYS = {"mt5_password", "password"}
+
+
 def mask(data: dict) -> dict:
     out = dict(data)
     for key in SECRET_KEYS:
         val = str(out.get(key) or "")
         out[key + "_set"] = bool(val)
         out[key] = "••••" if val else ""
+    # Per-account credentials live inside the accounts list, which is now
+    # preserved through load/save and so would otherwise be returned in clear
+    # by GET /settings.
+    accounts = out.get("accounts")
+    if isinstance(accounts, list):
+        masked = []
+        for entry in accounts:
+            if not isinstance(entry, dict):
+                continue
+            e = dict(entry)
+            for key in ACCOUNT_SECRET_KEYS:
+                if key in e:
+                    val = str(e.get(key) or "")
+                    e[key + "_set"] = bool(val)
+                    e[key] = "••••" if val else ""
+            masked.append(e)
+        out["accounts"] = masked
     return out
 
 

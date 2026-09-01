@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.api.v1 import system, auth, metrics, ops, settings, brain, tv_alerts, journal, portfolio
+from app.api.v1 import accounts, system, auth, metrics, ops, settings, brain, tv_alerts, journal, portfolio
 
 api_router = APIRouter()
 api_router.include_router(system.router, tags=["system"])
@@ -11,3 +11,4 @@ api_router.include_router(brain.router, tags=["brain"])
 api_router.include_router(tv_alerts.router, tags=["tv-alerts"])
 api_router.include_router(journal.router, tags=["journal"])
 api_router.include_router(portfolio.router, tags=["portfolio"])
+api_router.include_router(accounts.router, tags=["accounts"])
