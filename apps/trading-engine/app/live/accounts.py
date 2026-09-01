@@ -74,6 +74,9 @@ class AccountConfig:
     rpc_host: str = "host.docker.internal"
     rpc_port: int = 8001
     symbols: str = "auto"
+    # "auto" lets the engine sweep its own timeframes; an explicit value
+    # (M5/M15/H1/H4/D1) pins entries to that one.
+    timeframe: str = "auto"
     strategy_names: Any = None
     # Risk/behaviour knobs, already flattened -- LiveRunner reads these the
     # same way it read the top-level runtime settings before.
@@ -108,6 +111,7 @@ _INHERITED_KEYS = (
     "master_bot_enabled",
     "strategy_names",
     "symbols",
+    "timeframe",
 )
 
 
@@ -128,6 +132,7 @@ def _account_from_entry(entry: dict, rt: dict, index: int) -> AccountConfig:
         rpc_host=_pick(entry, "rpc_host", "mt5_rpc_host") or os.getenv("MT5_RPC_HOST", "host.docker.internal"),
         rpc_port=_as_int(_pick(entry, "rpc_port", "mt5_rpc_port")) or int(os.getenv("MT5_RPC_PORT", "8001")),
         symbols=str(entry.get("symbols") or rt.get("symbols") or "auto"),
+        timeframe=str(entry.get("timeframe") or rt.get("timeframe") or "auto"),
         strategy_names=entry.get("strategy_names", rt.get("strategy_names")),
         settings=settings,
     )
@@ -148,6 +153,7 @@ def _legacy_single_account(rt: dict) -> AccountConfig:
         rpc_host=os.getenv("MT5_RPC_HOST", "host.docker.internal"),
         rpc_port=int(os.getenv("MT5_RPC_PORT", "8001")),
         symbols=str(rt.get("symbols") or "auto"),
+        timeframe=str(rt.get("timeframe") or "auto"),
         strategy_names=rt.get("strategy_names"),
         settings=dict(rt),
     )

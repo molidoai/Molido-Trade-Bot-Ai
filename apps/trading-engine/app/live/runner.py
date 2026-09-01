@@ -33,6 +33,7 @@ from molido_brain import (
     CheapCandidate,
     resolve_universe,
     resolve_trade_timeframe,
+    is_auto_timeframe,
     cheap_score,
     overnight_swap_r,
 )
@@ -167,7 +168,7 @@ class LiveRunner:
         self.account = account
         self.log_tag = account.id
         acc_settings = account.settings or rt
-        self.tf_override = "AUTO"
+        self.tf_override = account.timeframe
         self.symbols = resolve_universe(account.symbols)
         self.timeframe = TimeFrame.M15
         self.picker = UniversePicker()
@@ -256,7 +257,7 @@ class LiveRunner:
         self.account = acc
         settings = acc.settings or rt
         self.account_mode = acc.account_mode
-        self.tf_override = "AUTO"
+        self.tf_override = acc.timeframe
         self.symbols = resolve_universe(acc.symbols)
         self.timeframe = TimeFrame.M15
         if "master_bot_enabled" in settings:
@@ -430,7 +431,17 @@ class LiveRunner:
             # is judged by an M5-appropriate threshold. If the first
             # timeframe opens a position, the no-average-down rule blocks a
             # second entry on the same symbol, so this cannot double up.
-            tfs = [TimeFrame.M15] + ([TimeFrame.M5] if cand.spread_ok else [])
+            # "auto" (the default) sweeps both bar sizes, which is what gives
+            # the brains several decision points per candidate. An explicit
+            # timeframe in settings pins entries to just that one -- it used to
+            # be ignored entirely: tf_override was hardcoded to "AUTO",
+            # self.timeframe to M15, and resolve_trade_timeframe was imported
+            # and never called, so the dashboard's timeframe control did
+            # nothing whatever it was set to.
+            if is_auto_timeframe(self.tf_override):
+                tfs = [TimeFrame.M15] + ([TimeFrame.M5] if cand.spread_ok else [])
+            else:
+                tfs = [resolve_trade_timeframe(self.tf_override, overlap=overlap, spread_ok=cand.spread_ok)]
             for tf in tfs:
                 try:
                     await self._evaluate_symbol(
