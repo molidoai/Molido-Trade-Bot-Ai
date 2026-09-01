@@ -15,6 +15,7 @@ from molido_telegram.client import TelegramClient
 from molido_telegram.auth import TelegramAuth
 from molido_telegram.handlers import CommandRouter, BotState
 from molido_telegram.alerts import AlertService
+from molido_telegram import menu
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +39,18 @@ class TelegramBot:
         self._running = True
         logger.info("Telegram bot started")
         try:
+            await self.client.set_commands([
+                {"command": "start", "description": "menu"},
+                {"command": "status", "description": "status"},
+                {"command": "balance", "description": "balance"},
+                {"command": "positions", "description": "open positions"},
+                {"command": "risk", "description": "risk limits"},
+            ])
+            body, keyboard = menu.render("menu")
             await self.client.send_message(
                 self.auth.admin_chat_id,  # type: ignore
-                "🤖 Molido Telegram Bot آنلاین شد.\n/start برای راهنما.",
+                body,
+                reply_markup=keyboard,
             )
         except Exception as e:
             logger.warning("Could not send startup message: %s", e)
@@ -60,20 +70,74 @@ class TelegramBot:
         self._running = False
 
     async def _process_update(self, update: dict) -> None:
+        cb = update.get("callback_query")
+        if cb:
+            await self._process_callback(cb)
+            return
+
         msg = update.get("message") or update.get("edited_message")
         if not msg:
             return
         chat = msg.get("chat") or {}
         chat_id = str(chat.get("id", ""))
-        text = msg.get("text") or ""
+        text = (msg.get("text") or "").strip()
         user = (msg.get("from") or {}).get("username") or ""
 
         if not self.auth.is_allowed(chat_id):
             logger.warning("Unauthorized telegram chat: %s", chat_id)
             return
 
-        reply = await self.router.handle(chat_id, text, user)
-        await self.client.send_message(chat_id, reply)
+        # Anything that is not a known command opens the menu, so the bot is
+        # usable without knowing any command at all.
+        if text.startswith("/"):
+            reply = await self.router.handle(chat_id, text, user)
+            if reply:
+                await self.client.send_message(chat_id, reply, reply_markup=menu.MAIN_KB)
+                return
+        body, keyboard = menu.render("menu")
+        await self.client.send_message(chat_id, body, reply_markup=keyboard)
+
+    async def _process_callback(self, cb: dict) -> None:
+        chat_id = str(((cb.get("message") or {}).get("chat") or {}).get("id", ""))
+        message_id = (cb.get("message") or {}).get("message_id")
+        data = str(cb.get("data") or "")
+        user = (cb.get("from") or {}).get("username") or ""
+        cb_id = str(cb.get("id") or "")
+
+        if not self.auth.is_allowed(chat_id):
+            await self.client.answer_callback(cb_id, "دسترسی ندارید")
+            return
+
+        kind, _, arg = data.partition(":")
+
+        if kind == "v" and arg == "control":
+            if not self.auth.is_admin(chat_id):
+                await self.client.answer_callback(cb_id, "فقط مدیر")
+                return
+            body, keyboard = menu.CONTROL_TEXT, menu.CONTROL_KB
+        elif kind == "v":
+            body, keyboard = menu.render(arg)
+        elif kind == "c":
+            # Ask before doing: a button must not be a shortcut past the
+            # confirmation the typed commands require.
+            if not self.auth.is_admin(chat_id):
+                await self.client.answer_callback(cb_id, "فقط مدیر")
+                return
+            body, keyboard = menu.confirm_text(arg), menu.confirm_kb(arg)
+        elif kind == "k":
+            if not self.auth.is_admin(chat_id):
+                await self.client.answer_callback(cb_id, "فقط مدیر")
+                return
+            body = await self.router.handle(chat_id, "/" + arg, user)
+            keyboard = menu.BACK_KB
+        else:
+            body, keyboard = menu.render("menu")
+
+        await self.client.answer_callback(cb_id)
+        if message_id:
+            await self.client.edit_message(chat_id, message_id, body, reply_markup=keyboard)
+        else:
+            await self.client.send_message(chat_id, body, reply_markup=keyboard)
 
 
 def _runtime_settings() -> dict:
