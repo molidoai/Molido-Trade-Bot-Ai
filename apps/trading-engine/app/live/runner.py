@@ -249,6 +249,14 @@ class LiveRunner:
             # weekly loss limit in settings silently did nothing.
             max_weekly_loss=num("max_weekly_loss", base.max_weekly_loss),
             max_entries_per_day=max(1, whole("max_entries_per_day", base.max_entries_per_day)),
+            # The streak brake is the primary protection when risk per trade is
+            # sized so that max_consecutive_losses * risk lands under the daily
+            # cap: the bot pauses for a few hours and comes back, instead of
+            # spending the rest of the day denied.
+            max_consecutive_losses=max(0, whole("max_consecutive_losses", base.max_consecutive_losses)),
+            consecutive_loss_pause_seconds=max(
+                0, whole("consecutive_loss_pause_seconds", base.consecutive_loss_pause_seconds)
+            ),
             max_drawdown=num("max_drawdown", 0.04),
             max_open_positions=max(1, max_pos),
             # Prop-challenge backstop; 0 (the default) leaves it off.
