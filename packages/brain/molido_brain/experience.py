@@ -147,6 +147,10 @@ class Experience:
             ("strategy", rec.get("strategy")),
             ("session", rec.get("session")),
             ("side", rec.get("side")),
+            # How the trade ended. Splits "the stop did its job" from "we
+            # closed it ourselves", which is the difference between a strategy
+            # that is wrong and one that is merely being interrupted.
+            ("exit", rec.get("exit_reason")),
         ):
             if value:
                 self._by_key.setdefault((dim, str(value)), []).append(r)

@@ -117,6 +117,32 @@ class TradeJournal:
         out.reverse()
         return out
 
+    def entries_today(self) -> int:
+        """Fills recorded so far in the current UTC day.
+
+        The counter behind max_entries_per_day: nothing populated
+        AccountState.entries_today, so the cap could never bite however many
+        trades the day had already taken.
+        """
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date()
+        n = 0
+        for rec in self._read():
+            if rec.get("event") != "fill":
+                continue
+            ts = rec.get("ts")
+            if not ts:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt.date() == today:
+                n += 1
+        return n
+
     def risk_by_ticket(self) -> dict[str, float]:
         """Risk amount each open trade was sized with, keyed by ticket.
 

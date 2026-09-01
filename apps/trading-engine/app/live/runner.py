@@ -559,6 +559,7 @@ class LiveRunner:
             pos = before.get(ticket)
             symbol = getattr(pos, "symbol", None)
             profit = None
+            deals = None
             try:
                 deals = self.broker._mt5.history_deals_get(position=int(ticket))
                 if deals:
@@ -574,6 +575,30 @@ class LiveRunner:
             risk = risk_by_ticket.get(str(ticket))
             r = round(profit / risk, 3) if (profit is not None and risk) else None
 
+            # Why it ended, so losses can be analysed rather than just counted.
+            # "stopped" and "target" are the strategy working as designed;
+            # anything else is the bot or the operator intervening, and those
+            # want telling apart when the record is reviewed.
+            exit_reason = None
+            try:
+                sl = float(getattr(pos, "stop_loss", 0) or 0)
+                tp = float(getattr(pos, "take_profit", 0) or 0)
+                entry = float(getattr(pos, "entry_price", 0) or 0)
+                last = None
+                if deals:
+                    last = float(getattr(deals[-1], "price", 0) or 0)
+                if last and entry:
+                    d_sl = abs(last - sl) if sl else None
+                    d_tp = abs(last - tp) if tp else None
+                    if d_sl is not None and (d_tp is None or d_sl <= d_tp):
+                        exit_reason = "stopped"
+                    elif d_tp is not None:
+                        exit_reason = "target"
+                if exit_reason is None and r is not None:
+                    exit_reason = "closed_up" if r > 0 else "closed_down"
+            except Exception:
+                logger.debug("could not classify exit for %s", ticket, exc_info=True)
+
             self.journal.append(
                 "close",
                 ticket=ticket,
@@ -582,6 +607,8 @@ class LiveRunner:
                 profit=None if profit is None else round(profit, 2),
                 risk_amount=risk,
                 r_multiple=r,
+                exit_reason=exit_reason,
+                strategy=getattr(pos, "strategy", None),
             )
             if r is None:
                 logger.info("[%s] CLOSED %s %s (result unknown)", self.log_tag, symbol, ticket)

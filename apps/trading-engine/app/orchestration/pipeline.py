@@ -250,6 +250,7 @@ class TradingPipeline:
         if self.journal is not None and hasattr(self.journal, "loss_streak"):
             try:
                 account_state.consecutive_losses = self.journal.loss_streak()
+                account_state.entries_today = self.journal.entries_today()
                 if account_state.consecutive_losses and account_state.last_loss_at is None:
                     account_state.last_loss_at = self.journal.last_close_time()
             except Exception:

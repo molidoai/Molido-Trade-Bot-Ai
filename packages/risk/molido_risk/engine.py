@@ -149,6 +149,21 @@ class RiskEngine:
             checks["daily_loss"] = False
             return self._deny("Equity is zero or negative", checks)
 
+        # Daily entry cap. max_entries_per_day has always been in RiskLimits and
+        # the autopilot now computes it from the daily budget -- but nothing
+        # enforced it and nothing populated account.entries_today, so it was
+        # another number that got logged and ignored. It is the direct control
+        # on overtrading: budget / risk-per-trade is exactly how many losing
+        # trades the day can absorb, and taking more than that is spending
+        # money the plan does not have.
+        if limits.max_entries_per_day > 0:
+            checks["entries_today"] = account.entries_today < limits.max_entries_per_day
+            if not checks["entries_today"]:
+                return self._deny(
+                    f"{account.entries_today} entries today >= daily cap {limits.max_entries_per_day}",
+                    checks,
+                )
+
         # Consecutive-loss brake. max_consecutive_losses and
         # consecutive_loss_pause_seconds have been in RiskLimits from the
         # start and no code ever read them, so a losing streak did nothing at
