@@ -9,6 +9,7 @@ Nothing here bypasses RiskEngine. The brain may only veto, never enlarge size.
 
 from __future__ import annotations
 import logging
+import math
 import uuid
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -405,7 +406,16 @@ class TradingPipeline:
                 size_mult=size_mult,
             )
 
-        lot = risk_result.lot_size * min(1.0, size_mult)
+        # Re-normalise to the broker's lot step. risk_result.lot_size is already
+        # a whole number of steps, but a brain halving it lands between them --
+        # 0.17 * 0.5 = 0.085 -- and MT5 rejects that outright with retcode 10014
+        # "Invalid volume". So a brain deciding to trade at half size silently
+        # killed the order instead of shrinking it; that is how every USDJPY
+        # attempt on 2026-08-31 died. Floor, never round: reducing size is the
+        # safe direction, and rounding up would exceed the risk just approved.
+        step = limits.lot_step or 0.01
+        raw_lot = risk_result.lot_size * min(1.0, size_mult)
+        lot = round(math.floor(raw_lot / step + 1e-9) * step, 4)
         if lot < limits.min_lot_size:
             self._journal("skip", symbol=symbol, reason="size_mult reduced lot below min", p_win=p_win)
             return PipelineResult(

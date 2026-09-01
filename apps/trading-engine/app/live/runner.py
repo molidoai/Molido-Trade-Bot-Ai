@@ -370,6 +370,20 @@ class LiveRunner:
             telegram_notify(f"🔻 بستن پوزیشن‌ها: {flat_why}")
         open_syms = []
         if self.positions is not None:
+            # Ask the broker what we actually hold before deciding whether to
+            # open more. Previously sync_from_broker() only ran inside
+            # _manage_open(), i.e. only for symbols already known to be open,
+            # and reconcile() ran once at startup -- so a fill the local
+            # manager missed stayed invisible for the rest of the run. The
+            # picker excludes open symbols, saw none, and re-entered the same
+            # setup every cycle: six GBPUSD SELLs in ten minutes on
+            # 2026-08-31, one signal turned into six positions. The broker is
+            # the authority on what is open; consult it before sizing up.
+            try:
+                await self.positions.sync_from_broker()
+            except Exception:
+                logger.exception("[%s] position sync failed; skipping new entries this cycle", self.log_tag)
+                return
             open_syms = list({p.symbol for p in self.positions.get_all()})
         for symbol in open_syms:
             try:
