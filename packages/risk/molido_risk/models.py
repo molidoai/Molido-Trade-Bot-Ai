@@ -48,6 +48,22 @@ class RiskLimits:
     pause_on_negative_journal: bool = True
     dead_atr_ratio: float = 0.0003
     atr_vs_stop_max: float = 1.2
+    # How far the live price may drift from the signal's entry before the
+    # setup is considered stale, as a fraction of the stop distance.
+    # Beyond this we skip rather than chase the move.
+    max_entry_drift_r: float = 0.5
+    # Prop-challenge floor. Firms measure the hard "max loss" against the
+    # STARTING balance, not against peak equity -- FundedNext's $15k trial
+    # fails at $13,500 whatever the account did in between. max_drawdown is
+    # measured from peak_equity, which tracks a *different* rule and is
+    # rebuilt from live state, so a restart or a stale snapshot can move it;
+    # this floor cannot move. 0 disables it (the default for non-prop
+    # accounts). Set prop_initial_balance to the challenge's starting
+    # balance and prop_max_loss_pct to the firm's hard limit, then keep the
+    # engine's own max_daily_loss/max_drawdown tighter than the firm's --
+    # this is a backstop, never the primary limit.
+    prop_initial_balance: float = 0.0
+    prop_max_loss_pct: float = 0.10
 
 
 @dataclass
@@ -85,6 +101,10 @@ class RiskContext:
     risk_reward: float | None = None
     spread_points: float | None = None
     atr: float | None = None
+    # Timeframe `atr` was measured on -- dead_atr_ratio is calibrated for
+    # M15, so the gate rescales it for other bar sizes (see
+    # molido_shared.volatility). None keeps the unscaled M15 behavior.
+    timeframe: str | None = None
     regime: str | None = None
     # P(model's "HighVol" label) from molido_regime.MLVolatilityDetector, or
     # None if no model is loaded / not enough history -- None must behave

@@ -35,6 +35,12 @@ class SettingsPatch(BaseModel):
     max_daily_loss: float | None = Field(default=None, ge=0.001, le=0.2)
     max_drawdown: float | None = Field(default=None, ge=0.001, le=0.5)
     max_open_positions: int | None = Field(default=None, ge=1, le=50)
+    # The engine reads both of these every cycle; they were persisted but not
+    # settable here, so the dashboard could not change them at all.
+    max_weekly_loss: float | None = Field(default=None, ge=0.001, le=0.5)
+    max_entries_per_day: int | None = Field(default=None, ge=1, le=100)
+    # False (default) = trade any active session; True = London/NY overlap only
+    session_overlap_only: bool | None = None
     strategy_names: list[str] | None = None
 
 

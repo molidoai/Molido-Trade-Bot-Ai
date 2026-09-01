@@ -120,7 +120,9 @@ def _maybe_notify_dead() -> None:
         return
     age = _stale_seconds()
     telegram_notify(
-        f"Molido engine heartbeat dead (stale {int(age) if age is not None else 'never'}s, threshold {int(HEARTBEAT_STALE_SEC)}s)"
+        "⚠️ <b>موتور معاملات پاسخ نمی‌دهد</b>" + chr(10)
+        + f"آخرین سیگنال: {int(age) if age is not None else 'هرگز'} ثانیه پیش "
+        + f"(آستانه: {int(HEARTBEAT_STALE_SEC)} ثانیه)"
     )
     _stale_notified = True
 
@@ -197,7 +199,10 @@ async def set_master(
     out = _snapshot(settings)
     out["actor"] = body.actor or admin.email
     out["message"] = "Master " + ("ON" if _master_on else "OFF")
-    telegram_notify(f"Molido master {'ON' if _master_on else 'OFF'} (by {out['actor']})")
+    telegram_notify(
+        ("🟢 <b>مستر روشن شد</b>" if _master_on else "🔴 <b>مستر خاموش شد</b>")
+        + chr(10) + f"توسط: {out['actor']}"
+    )
     return out
 
 
@@ -216,7 +221,7 @@ async def flatten_all(
     out["actor"] = actor
     out["message"] = "flatten requested"
     out["reason"] = reason
-    telegram_notify(f"Molido flatten requested ({reason})")
+    telegram_notify("🔻 <b>درخواست بستن همه پوزیشن‌ها</b>" + chr(10) + f"دلیل: {reason}")
     return out
 
 
@@ -248,7 +253,10 @@ async def set_mode(
     out["actor"] = body.actor or admin.email
     out["message"] = f"Mode set to {_account_mode}"
     if body.mode != previous:
-        telegram_notify(f"Molido account mode {previous} → {_account_mode} (by {out['actor']})")
+        telegram_notify(
+            "🔄 <b>حالت حساب تغییر کرد</b>" + chr(10)
+            + f"از {previous} به {_account_mode}" + chr(10) + f"توسط: {out['actor']}"
+        )
     return out
 
 
@@ -274,5 +282,8 @@ async def enable_live(
     out = _snapshot(settings)
     out["actor"] = body.actor or admin.email
     out["message"] = "LIVE enabled: REAL + master ON"
-    telegram_notify(f"Molido LIVE enabled: REAL + master ON (by {out['actor']})")
+    telegram_notify(
+        "🚨 <b>حالت واقعی فعال شد</b>" + chr(10)
+        + "حساب: REAL | مستر: روشن" + chr(10) + f"توسط: {out['actor']}"
+    )
     return out

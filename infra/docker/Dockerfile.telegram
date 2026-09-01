@@ -1,0 +1,13 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+COPY telegram-bot/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+COPY telegram-bot/molido_telegram /app/molido_telegram
+
+ENV PYTHONPATH=/app
+ENV RUNTIME_SETTINGS_PATH=/app/data/runtime-settings.json
+
+CMD ["python", "-m", "molido_telegram.bot"]

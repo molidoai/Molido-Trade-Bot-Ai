@@ -61,7 +61,7 @@ class CommandRouter:
     async def handle(self, chat_id: str, text: str, user_name: str = "") -> str:
         text = (text or "").strip()
         if not text.startswith("/"):
-            return "Commands start with /. /start for help."
+            return "دستورها با / شروع می‌شوند. برای راهنما /start را بزنید."
 
         parts = text.split()
         cmd = parts[0].split("@")[0].lower()
@@ -87,32 +87,32 @@ class CommandRouter:
         }
         fn = handlers.get(cmd)
         if not fn:
-            return f"unknown command: {cmd}\n/help for commands."
+            return f"دستور ناشناخته: {cmd}\nبرای فهرست دستورها /help را بزنید."
         return await fn(chat_id, args, user_name)
 
     async def _start(self, chat_id: str, args: list[str], user: str) -> str:
         return (
-            "<b>Molido Trade Bot AI</b>\n"
+            "<b>ربات معاملاتی Molido</b>\n"
             "----------------\n"
-            "Commands:\n"
-            "/status - status\n"
-            "/balance - balance and equity\n"
-            "/pnl - daily pnl\n"
-            "/positions - open positions\n"
-            "/risk - risk limits\n"
-            "/mode - account mode (DEMO/PROP/REAL)\n"
-            "/pause - stop new entries\n"
-            "/resume - resume (needs confirm)\n"
-            "/stop - Master off (needs confirm)\n"
-            "/off - Master OFF immediate (admin)\n"
-            "/flatten - close all positions (admin)\n"
+            "دستورها:\n"
+            "/status - وضعیت کلی\n"
+            "/balance - موجودی و اکوئیتی\n"
+            "/pnl - سود و زیان امروز\n"
+            "/positions - پوزیشن‌های باز\n"
+            "/risk - محدودیت‌های ریسک\n"
+            "/mode - حالت حساب (DEMO/PROP/REAL)\n"
+            "/pause - توقف ورودهای جدید\n"
+            "/resume - ازسرگیری (نیاز به تأیید)\n"
+            "/stop - خاموش کردن مستر (نیاز به تأیید)\n"
+            "/off - خاموشی فوری مستر (فقط مدیر)\n"
+            "/flatten - بستن همه پوزیشن‌ها (فقط مدیر)\n"
             "\n"
-            "API: POST /api/v1/ops/flatten and POST /api/v1/ops/master {on:false}\n"
-            "Telegram uses MOLIDO_API_URL + MOLIDO_API_TOKEN.\n"
             "\n"
-            "No profit guarantee.\n"
-            f"Mode: <b>{self.state.account_mode}</b> | "
-            f"bot: <b>{'ON' if self.state.master_bot_on else 'OFF'}</b>"
+            "\n"
+            "\n"
+            "⚠️ هیچ تضمین سودی وجود ندارد.\n"
+            f"حالت حساب: <b>{self.state.account_mode}</b> | "
+            f"مستر: <b>{'روشن' if self.state.master_bot_on else 'خاموش'}</b>"
         )
 
     async def _status(self, chat_id: str, args: list[str], user: str) -> str:
@@ -126,107 +126,107 @@ class CommandRouter:
                 self.state.account_mode = data.get("account_mode", self.state.account_mode)
                 self.state.circuit_open = data.get("circuit_open", self.state.circuit_open)
             except Exception as e:
-                return f"status error: {e}"
+                return f"خطا در دریافت وضعیت: {e}"
 
-        circuit = "OPEN" if self.state.circuit_open else "OK"
-        master = "ON" if self.state.master_bot_on else "OFF"
+        circuit = "قطع شده ⛔" if self.state.circuit_open else "سالم ✅"
+        master = "روشن" if self.state.master_bot_on else "خاموش"
         return (
-            f"<b>status</b>\n"
-            f"mode: <b>{self.state.account_mode}</b>\n"
-            f"Master Bot: {master}\n"
-            f"Circuit: {circuit}\n"
-            f"equity: <code>{self.state.equity:,.2f}</code>\n"
-            f"balance: <code>{self.state.balance:,.2f}</code>\n"
-            f"open: <code>{self.state.open_positions}</code>\n"
-            f"daily pnl: <code>{self.state.daily_pnl:,.2f}</code>"
+            f"<b>وضعیت</b>\n"
+            f"حالت حساب: <b>{self.state.account_mode}</b>\n"
+            f"مستر: {master}\n"
+            f"مدار حفاظتی: {circuit}\n"
+            f"اکوئیتی: <code>{self.state.equity:,.2f}</code>\n"
+            f"موجودی: <code>{self.state.balance:,.2f}</code>\n"
+            f"پوزیشن باز: <code>{self.state.open_positions}</code>\n"
+            f"سود/زیان امروز: <code>{self.state.daily_pnl:,.2f}</code>"
         )
 
     async def _balance(self, chat_id: str, args: list[str], user: str) -> str:
         return (
-            f"<b>balance</b>\n"
-            f"Balance: <code>{self.state.balance:,.2f}</code>\n"
-            f"Equity: <code>{self.state.equity:,.2f}</code>\n"
-            f"Mode: {self.state.account_mode}"
+            f"<b>موجودی</b>\n"
+            f"موجودی: <code>{self.state.balance:,.2f}</code>\n"
+            f"اکوئیتی: <code>{self.state.equity:,.2f}</code>\n"
+            f"حالت حساب: {self.state.account_mode}"
         )
 
     async def _pnl(self, chat_id: str, args: list[str], user: str) -> str:
         sign = "+" if self.state.daily_pnl >= 0 else ""
-        return f"<b>daily pnl</b>\n<code>{sign}{self.state.daily_pnl:,.2f}</code>"
+        return f"<b>سود/زیان امروز</b>\n<code>{sign}{self.state.daily_pnl:,.2f}</code>"
 
     async def _positions(self, chat_id: str, args: list[str], user: str) -> str:
         if self.state.open_positions == 0:
-            return "no open positions."
-        return f"open positions: <b>{self.state.open_positions}</b>\n(details in Dashboard)"
+            return "هیچ پوزیشن بازی وجود ندارد."
+        return f"پوزیشن‌های باز: <b>{self.state.open_positions}</b>\n(جزئیات در داشبورد)"
 
     async def _risk(self, chat_id: str, args: list[str], user: str) -> str:
         return (
-            "<b>risk</b>\n"
-            "- Stop-Loss required\n"
-            "- daily loss / drawdown limits on\n"
-            "- PROP mode applies prop-firm rules\n"
-            f"Circuit: {'OPEN' if self.state.circuit_open else 'OK'}"
+            "<b>ریسک</b>\n"
+            "- حد ضرر (Stop-Loss) اجباری است\n"
+            "- سقف ضرر روزانه و دراودان فعال است\n"
+            "- در حالت PROP قوانین پراپ‌فرم اعمال می‌شود\n"
+            f"مدار حفاظتی: {'قطع شده ⛔' if self.state.circuit_open else 'سالم ✅'}"
         )
 
     async def _mode(self, chat_id: str, args: list[str], user: str) -> str:
-        return f"account mode: <b>{self.state.account_mode}</b>\nchange mode from Dashboard with audit."
+        return f"حالت حساب: <b>{self.state.account_mode}</b>\nتغییر حالت فقط از داشبورد و با تأیید دومرحله‌ای انجام می‌شود."
 
     async def _pause(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "⛔ admin only."
+            return "⛔ فقط مدیر مجاز است."
         self.state.master_bot_on = False
         if self.state.on_pause:
             await self.state.on_pause()
         await _ops_post("/ops/master", {"on": False, "actor": "telegram"})
-        return "new entries paused (Master OFF). open positions still managed."
+        return "ورودهای جدید متوقف شد (مستر خاموش). پوزیشن‌های باز همچنان مدیریت می‌شوند."
 
     async def _off(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "⛔ admin only."
+            return "⛔ فقط مدیر مجاز است."
         self.state.master_bot_on = False
         if self.state.on_pause:
             await self.state.on_pause()
         ok, detail = await _ops_post("/ops/master", {"on": False, "actor": "telegram /off"})
-        extra = " API OK" if ok else f" API: {detail}"
-        return "Master OFF." + extra
+        extra = " ✅" if ok else f" (خطای API: {detail})"
+        return "مستر خاموش شد." + extra
 
     async def _flatten(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "⛔ admin only."
+            return "⛔ فقط مدیر مجاز است."
         if self.state.on_flatten:
             await self.state.on_flatten()
         ok, detail = await _ops_post("/ops/flatten", {"actor": "telegram /flatten", "reason": "telegram"})
-        extra = " API OK" if ok else f" API: {detail}"
-        return "Flatten requested (close all opens)." + extra
+        extra = " ✅" if ok else f" (خطای API: {detail})"
+        return "درخواست بستن همه پوزیشن‌ها ارسال شد." + extra
 
     async def _resume(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "⛔ admin only."
+            return "⛔ فقط مدیر مجاز است."
         self._pending_confirm[chat_id] = "resume"
-        return "to resume type:\n<code>/confirm resume</code>"
+        return "برای ازسرگیری این را بفرست:\n<code>/confirm resume</code>"
 
     async def _stop(self, chat_id: str, args: list[str], user: str) -> str:
         if not self.is_admin(chat_id):
-            return "⛔ admin only."
+            return "⛔ فقط مدیر مجاز است."
         self._pending_confirm[chat_id] = "stop"
-        return "Master off. confirm:\n<code>/confirm stop</code>"
+        return "خاموش کردن مستر. برای تأیید بفرست:\n<code>/confirm stop</code>"
 
     async def _confirm(self, chat_id: str, action: str) -> str:
         if not self.is_admin(chat_id):
-            return "⛔ admin only."
+            return "⛔ فقط مدیر مجاز است."
         expected = self._pending_confirm.get(chat_id)
         if expected != action:
-            return "confirm invalid or expired."
+            return "تأیید نامعتبر یا منقضی شده است."
         del self._pending_confirm[chat_id]
         if action == "resume":
             self.state.master_bot_on = True
             if self.state.on_resume:
                 await self.state.on_resume()
             await _ops_post("/ops/master", {"on": True, "actor": "telegram"})
-            return "Master Bot ON."
+            return "مستر روشن شد ✅"
         if action == "stop":
             self.state.master_bot_on = False
             if self.state.on_pause:
                 await self.state.on_pause()
             await _ops_post("/ops/master", {"on": False, "actor": "telegram"})
-            return "Master Bot OFF."
-        return "unknown action."
+            return "مستر خاموش شد."
+        return "عملیات ناشناخته."

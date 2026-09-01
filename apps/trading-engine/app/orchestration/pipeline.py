@@ -9,6 +9,7 @@ Nothing here bypasses RiskEngine. The brain may only veto, never enlarge size.
 
 from __future__ import annotations
 import logging
+import math
 import uuid
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -29,9 +30,10 @@ except ImportError:
     correlated_block = None  # type: ignore
     default_calendar_path = None  # type: ignore
 try:
-    from molido_execution.limit_entry import entry_limit_price
+    from molido_execution.limit_entry import entry_limit_price, shift_stops_to_price
 except ImportError:
     entry_limit_price = None  # type: ignore
+    shift_stops_to_price = None  # type: ignore
 try:
     from molido_brain.swap import overnight_swap_r
 except ImportError:
@@ -76,6 +78,7 @@ class TradingPipeline:
         brain: object | None = None,
         journal: object | None = None,
         news_guard: object | None = None,
+        hours_guard: object | None = None,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -89,6 +92,10 @@ class TradingPipeline:
         self.risk_limits = risk_limits or self.risk.limits
         self.journal = journal
         self.news_guard = news_guard
+        # Set by the runner from the same session config its own calendar uses.
+        # Left None this falls back to a default-constructed guard, which is
+        # overlap-only -- see the call site.
+        self.hours_guard = hours_guard
         if brain is not None:
             self.brain = brain
         elif DecisionBrain is not None:
@@ -123,8 +130,17 @@ class TradingPipeline:
             self._journal("skip", symbol=symbol, reason="Master bot is OFF")
             return PipelineResult(skipped_reason="Master bot is OFF")
 
-        if TradingHoursGuard is not None:
-            ok_h, why_h = TradingHoursGuard().allow_new_entries()
+        hours = self.hours_guard
+        if hours is None and TradingHoursGuard is not None:
+            # Constructing a fresh guard here ignored session_overlap_only
+            # entirely: the runner gated the cycle on its correctly configured
+            # calendar, then this unconfigured one vetoed every symbol anyway
+            # with "New entries only in London/NY overlap". The setting was
+            # loaded, persisted and threaded -- and then overridden by a
+            # default. Prefer the guard the runner configured.
+            hours = TradingHoursGuard()
+        if hours is not None:
+            ok_h, why_h = hours.allow_new_entries()
             if not ok_h:
                 self._journal("skip", symbol=symbol, reason=f"TradingHours: {why_h}")
                 return PipelineResult(skipped_reason=f"TradingHours: {why_h}")
@@ -228,6 +244,16 @@ class TradingPipeline:
 
         snap = await self.portfolio.snapshot()
         account_state = self.portfolio.to_account_state(snap)
+        # Feed the risk engine the losing streak so max_consecutive_losses can
+        # actually fire. Nothing populated this before, so the field sat at 0
+        # forever and the limit was decorative.
+        if self.journal is not None and hasattr(self.journal, "loss_streak"):
+            try:
+                account_state.consecutive_losses = self.journal.loss_streak()
+                if account_state.consecutive_losses and account_state.last_loss_at is None:
+                    account_state.last_loss_at = self.journal.last_close_time()
+            except Exception:
+                logger.debug("loss streak unavailable", exc_info=True)
 
         p_win = None
         expected_r = None
@@ -259,6 +285,7 @@ class TradingPipeline:
                 daily_pnl=getattr(account_state, "daily_pnl", None),
                 equity=getattr(account_state, "equity", None),
                 daily_loss_limit=getattr(self.risk.limits, "max_daily_loss", 0.02),
+                timeframe=timeframe,
             )
             p_win = verdict.p_win
             expected_r = verdict.expected_r
@@ -308,6 +335,44 @@ class TradingPipeline:
                 )
 
         limits = self.risk.limits
+
+        if not final.stop_loss:
+            self._journal("skip", symbol=symbol, reason="mandatory SL missing", p_win=p_win)
+            return PipelineResult(
+                signal=final, skipped_reason="mandatory SL missing",
+                p_win=p_win, expected_r=expected_r, size_mult=size_mult,
+            )
+
+        # The strategy anchors entry/SL/TP to the last closed candle, but the
+        # order goes in at the live bid/ask. Resolve the real order price
+        # first, then move SL and TP by exactly the same drift, so the stop
+        # distance the risk engine sizes against is the one actually sent.
+        # Without this the intended R:R silently degrades as price moves, and
+        # once price passes the take-profit the broker rejects the whole
+        # order with retcode 10016 "Invalid stops".
+        price = None
+        if entry_limit_price is not None:
+            price = entry_limit_price(final.side.value, tick)
+        elif tick is not None:
+            price = getattr(tick, "bid" if final.side == SignalSide.BUY else "ask", None)
+        if price is None:
+            self._journal("skip", symbol=symbol, reason="no bid/ask for LIMIT entry", p_win=p_win)
+            return PipelineResult(
+                signal=final, skipped_reason="no bid/ask for LIMIT entry",
+                p_win=p_win, expected_r=expected_r, size_mult=size_mult,
+            )
+
+        order_sl, order_tp, drift, drift_reject = shift_stops_to_price(
+            final.entry, final.stop_loss, final.take_profit, price,
+            max_drift_r=getattr(limits, "max_entry_drift_r", 0.5),
+        )
+        if drift_reject:
+            self._journal("skip", symbol=symbol, reason=drift_reject, p_win=p_win)
+            return PipelineResult(
+                signal=final, skipped_reason=drift_reject,
+                p_win=p_win, expected_r=expected_r, size_mult=size_mult,
+            )
+
         ml_high_vol_prob = None
         if get_ml_vol_detector is not None:
             try:
@@ -317,13 +382,14 @@ class TradingPipeline:
         risk_ctx = RiskContext(
             symbol=symbol,
             side=final.side.value,
-            entry=final.entry,
-            stop_loss=final.stop_loss,
-            take_profit=final.take_profit,
+            entry=price,
+            stop_loss=order_sl,
+            take_profit=order_tp,
             signal_score=final.score,
             risk_reward=final.risk_reward,
             spread_points=spread_pts,
             atr=atr_val,
+            timeframe=getattr(timeframe, "value", timeframe),
             regime=regime,
             ml_high_vol_prob=ml_high_vol_prob,
             account=account_state,
@@ -350,7 +416,16 @@ class TradingPipeline:
                 size_mult=size_mult,
             )
 
-        lot = risk_result.lot_size * min(1.0, size_mult)
+        # Re-normalise to the broker's lot step. risk_result.lot_size is already
+        # a whole number of steps, but a brain halving it lands between them --
+        # 0.17 * 0.5 = 0.085 -- and MT5 rejects that outright with retcode 10014
+        # "Invalid volume". So a brain deciding to trade at half size silently
+        # killed the order instead of shrinking it; that is how every USDJPY
+        # attempt on 2026-08-31 died. Floor, never round: reducing size is the
+        # safe direction, and rounding up would exceed the risk just approved.
+        step = limits.lot_step or 0.01
+        raw_lot = risk_result.lot_size * min(1.0, size_mult)
+        lot = round(math.floor(raw_lot / step + 1e-9) * step, 4)
         if lot < limits.min_lot_size:
             self._journal("skip", symbol=symbol, reason="size_mult reduced lot below min", p_win=p_win)
             return PipelineResult(
@@ -376,42 +451,14 @@ class TradingPipeline:
         if p_win is not None:
             comment += f"|p={p_win:.2f}"
 
-        if not final.stop_loss:
-            self._journal("skip", symbol=symbol, reason="mandatory SL missing", p_win=p_win)
-            return PipelineResult(
-                signal=final,
-                skipped_reason="mandatory SL missing",
-                p_win=p_win,
-                expected_r=expected_r,
-                size_mult=size_mult,
-            )
-
-        price = None
-        if entry_limit_price is not None:
-            price = entry_limit_price(final.side.value, tick)
-        elif tick is not None:
-            if final.side == SignalSide.BUY:
-                price = getattr(tick, "bid", None)
-            else:
-                price = getattr(tick, "ask", None)
-        if price is None:
-            self._journal("skip", symbol=symbol, reason="no bid/ask for LIMIT entry", p_win=p_win)
-            return PipelineResult(
-                signal=final,
-                skipped_reason="no bid/ask for LIMIT entry",
-                p_win=p_win,
-                expected_r=expected_r,
-                size_mult=size_mult,
-            )
-
         req = ExecRequest(
             symbol=symbol,
             side=final.side.value,
             volume=lot,
             order_type="LIMIT",
             price=price,
-            stop_loss=final.stop_loss,
-            take_profit=final.take_profit,
+            stop_loss=order_sl,
+            take_profit=order_tp,
             client_order_id=str(uuid.uuid4()),
             strategy=final.strategy,
             signal_score=final.score,
@@ -436,6 +483,12 @@ class TradingPipeline:
                 mae=0.0,
                 mfe=0.0,
                 entry=exec_res.fill_price,
+                # Recorded so the close can be scored in R later. Without the
+                # risk this trade was opened with, a realised profit is just a
+                # dollar figure and cannot be compared across symbols or sizes.
+                stop_loss=order_sl,
+                risk_amount=round(risk_result.risk_amount * min(1.0, size_mult), 2),
+                strategy=final.strategy,
             )
         else:
             self._journal(
