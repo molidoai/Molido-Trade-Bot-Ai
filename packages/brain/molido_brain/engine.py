@@ -134,6 +134,7 @@ class DecisionBrain:
             daily_pnl=kwargs.get("daily_pnl"),
             equity=kwargs.get("equity"),
             daily_loss_limit=kwargs.get("daily_loss_limit", self.daily_loss_limit),
+            timeframe=kwargs.get("timeframe"),
         )
         votes.append(v3)
         if not v3.allow or v3.size_mult <= 0:

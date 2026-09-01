@@ -7,6 +7,7 @@ No manual pair picking. Heartbeat each cycle. Three numeric brains via pipeline.
 
 from __future__ import annotations
 import asyncio
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import os
@@ -24,8 +25,10 @@ from molido_execution import ExecutionEngine
 from molido_portfolio import PositionManager, PortfolioManager, Reconciler
 from molido_portfolio.trade_manager import TradeManager
 from molido_regime import MarketRegimeEngine
-from molido_guards import SessionCalendar, NewsBlackoutGuard, default_calendar_path
+from molido_guards import SessionCalendar, NewsBlackoutGuard, TradingHoursGuard, default_calendar_path
 from molido_strategies.engine import parse_strategy_names
+from molido_brain.experience import Experience
+from molido_brain.autopilot import plan as autopilot_plan, independent_groups
 from molido_brain import (
     DecisionBrain,
     h1_side_from_bars,
@@ -33,6 +36,7 @@ from molido_brain import (
     CheapCandidate,
     resolve_universe,
     resolve_trade_timeframe,
+    is_auto_timeframe,
     cheap_score,
     overnight_swap_r,
 )
@@ -40,6 +44,8 @@ from app.orchestration.pipeline import TradingPipeline
 from app.data.market_data import MarketDataEngine
 from app.live.alerts import notify as telegram_notify
 from app.live.decision_log import record_decision
+from app.live.status_snapshot import write_status
+from app.live.accounts import AccountConfig, load_accounts, enabled_accounts
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +79,23 @@ def _pick(rt: dict, *keys: str, env: str | None = None) -> str:
 def _env_bool(name: str, default: bool = True) -> bool:
     raw = os.getenv(name, "true" if default else "false").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+def _overlap_only(rt: dict) -> bool:
+    """New entries restricted to the London/NY overlap only?
+
+    Defaults to False: entries are allowed during any active session
+    (Tokyo/London/NY), roughly 17h/day instead of the 4h overlap window.
+    Overlap-only is the more conservative setting (tightest spreads, deepest
+    liquidity) and can be re-enabled per-deployment without a rebuild via
+    the session_overlap_only runtime setting or SESSION_OVERLAP_ONLY env.
+    """
+    val = rt.get("session_overlap_only")
+    if val is None:
+        return _env_bool("SESSION_OVERLAP_ONLY", False)
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
 
 
 # If the ops API can't be reached for this many consecutive cycles, we can no
@@ -121,24 +144,56 @@ def _post_heartbeat() -> None:
         logger.debug("ops heartbeat post failed")
 
 
+DATA_DIR = os.path.dirname(os.getenv("RUNTIME_SETTINGS_PATH", "/app/data/runtime-settings.json")) or "/app/data"
+
+
 class LiveRunner:
+    """Trades exactly one broker account.
+
+    Everything that carries per-account state -- broker connection, risk
+    engine (circuit breaker, daily-loss stop), positions, journal, dashboard
+    snapshot -- is owned by the instance, so running several of these
+    concurrently keeps the accounts fully isolated from each other.
+    """
+
     def __init__(
         self,
+        account: AccountConfig | None = None,
         symbols: list[str] | None = None,
         timeframe: TimeFrame = TimeFrame.M15,
         cycle_seconds: float = 15.0,
     ):
         rt = _load_runtime()
-        self.tf_override = "AUTO"
-        self.symbols = resolve_universe("auto")
+        if account is None:
+            # No account passed: behave exactly as the single-account engine
+            # did, by taking the first configured (or synthesised) account.
+            account = load_accounts(rt)[0]
+        self.account = account
+        self.log_tag = account.id
+        acc_settings = account.settings or rt
+        self.tf_override = account.timeframe
+        self.symbols = resolve_universe(account.symbols)
         self.timeframe = TimeFrame.M15
         self.picker = UniversePicker()
         self.cycle_seconds = cycle_seconds
-        self.account_mode = (_pick(rt, "trading_account_mode", env="TRADING_ACCOUNT_MODE") or "DEMO").upper()
+        self.account_mode = account.account_mode
         self.master_bot_on = _env_bool("MASTER_BOT_ENABLED", False)
-        if "master_bot_enabled" in rt:
-            self.master_bot_on = bool(rt.get("master_bot_enabled"))
+        if "master_bot_enabled" in acc_settings:
+            self.master_bot_on = bool(acc_settings.get("master_bot_enabled"))
         self._ops_poll_fail_count = 0
+        # Seconds to add to real UTC to get the broker's clock. MT5 stamps
+        # candles in broker-local time but the Candle carries no zone, so
+        # comparing them against datetime.now(utc) silently treats them as UTC.
+        # On MetaQuotes-Demo (UTC+3) that made closed_bars() discard every bar
+        # of the last three hours as "not yet closed": measured live, it kept
+        # 13 fewer bars than it should and handed the strategies a candle from
+        # 10:00 while the market was at 13:15. Every signal -- including the
+        # only six orders this bot has ever placed -- was computed on
+        # three-hour-old prices, and the resulting entry was then rejected by
+        # the drift guard, which is 30% of all decisions in the journal.
+        # Learned from tick timestamps rather than assumed, so it follows the
+        # broker across DST and works for any server.
+        self._broker_clock_offset = 0.0
         self._running = False
         self._flatten_seen = 0
         self.broker = None
@@ -150,10 +205,10 @@ class LiveRunner:
         self.market_data = None
         self.trade_manager = None
         self.regime = MarketRegimeEngine()
-        self.calendar = SessionCalendar()
+        self.calendar = SessionCalendar(overlap_only=_overlap_only(acc_settings))
         self.news = NewsBlackoutGuard(calendar_path=default_calendar_path())
         self.news.load_from_disk()
-        self.journal = TradeJournal()
+        self.journal = TradeJournal(path=account.journal_path(DATA_DIR))
         self.brain = DecisionBrain()
 
         self.indicators = IndicatorEngine()
@@ -166,10 +221,50 @@ class LiveRunner:
         self.indicators.add_from_registry("Supertrend", period=10, multiplier=3.0)
 
         self.strategies = StrategyEngine()
-        self.strategies.configure_live(parse_strategy_names(rt.get("strategy_names")))
+        self.strategies.configure_live(parse_strategy_names(account.strategy_names))
 
         self.signals = SignalEngine(accept_threshold=55.0)
-        self.risk = RiskEngine(self._limits_from(rt))
+        self.risk = RiskEngine(self._limits_from(acc_settings))
+
+    def _autopilot(self, rt: dict, limits: RiskLimits) -> RiskLimits:
+        """Derive the sizing limits from evidence rather than from settings.
+
+        On by default. Everything except the daily loss budget is arithmetic
+        once you know that budget and what the journal says about expectancy --
+        and hand-entering them independently is what produced a config where
+        risk per trade equalled the daily cap, so one loss ended the day.
+
+        The daily budget itself stays whatever the settings say (2% default);
+        risk appetite is not a fact the bot can measure, and a bot that picks
+        its own maximum loss has no maximum loss.
+        """
+        if str(rt.get("autopilot", True)).lower() in ("0", "false", "no", "off"):
+            return limits
+        try:
+            exp = Experience.from_journal(self.account.journal_path(DATA_DIR))
+            groups = independent_groups(self.symbols)
+            p = autopilot_plan(
+                max_daily_loss=limits.max_daily_loss,
+                experience=exp,
+                correlation_groups=groups,
+            )
+        except Exception:
+            logger.exception("[%s] autopilot failed; keeping configured limits", self.log_tag)
+            return limits
+
+        changed = (
+            round(limits.risk_per_trade, 5) != round(p.risk_per_trade, 5)
+            or limits.max_entries_per_day != p.max_entries_per_day
+            or limits.max_consecutive_losses != p.max_consecutive_losses
+            or limits.max_open_positions != p.max_open_positions
+        )
+        limits.risk_per_trade = p.risk_per_trade
+        limits.max_entries_per_day = p.max_entries_per_day
+        limits.max_consecutive_losses = p.max_consecutive_losses
+        limits.max_open_positions = p.max_open_positions
+        if changed:
+            logger.info("[%s] autopilot: %s", self.log_tag, " | ".join(p.reasons))
+        return limits
 
     def _limits_from(self, rt: dict) -> RiskLimits:
         def num(key: str, default: float) -> float:
@@ -181,45 +276,85 @@ class LiveRunner:
             max_pos = int(rt.get("max_open_positions", 3))
         except (TypeError, ValueError):
             max_pos = 3
+        def whole(key: str, default: int) -> int:
+            try:
+                return int(rt.get(key, default))
+            except (TypeError, ValueError):
+                return default
+        base = RiskLimits()
         return RiskLimits(
             risk_per_trade=num("default_risk_per_trade", 0.0025),
             max_daily_loss=num("max_daily_loss", 0.02),
+            # These three were settable in the dashboard and persisted to
+            # runtime-settings.json, but never read here -- the engine kept
+            # RiskLimits' own defaults, so changing the daily entry cap or the
+            # weekly loss limit in settings silently did nothing.
+            max_weekly_loss=num("max_weekly_loss", base.max_weekly_loss),
+            max_entries_per_day=max(1, whole("max_entries_per_day", base.max_entries_per_day)),
+            # The streak brake is the primary protection when risk per trade is
+            # sized so that max_consecutive_losses * risk lands under the daily
+            # cap: the bot pauses for a few hours and comes back, instead of
+            # spending the rest of the day denied.
+            max_consecutive_losses=max(0, whole("max_consecutive_losses", base.max_consecutive_losses)),
+            consecutive_loss_pause_seconds=max(
+                0, whole("consecutive_loss_pause_seconds", base.consecutive_loss_pause_seconds)
+            ),
             max_drawdown=num("max_drawdown", 0.04),
             max_open_positions=max(1, max_pos),
+            # Prop-challenge backstop; 0 (the default) leaves it off.
+            prop_initial_balance=num("prop_initial_balance", 0.0),
+            prop_max_loss_pct=num("prop_max_loss_pct", base.prop_max_loss_pct),
         )
 
+    def _resolve_account(self, rt: dict) -> AccountConfig:
+        """This account's latest config. If it disappears from the settings
+        file mid-run we keep the last known copy rather than crashing or,
+        worse, silently adopting another account's credentials."""
+        for acc in load_accounts(rt):
+            if acc.id == self.account.id:
+                return acc
+        logger.warning("[%s] account no longer in settings; keeping last known config", self.log_tag)
+        return self.account
+
     def _apply_runtime(self, rt: dict) -> None:
-        mode = (_pick(rt, "trading_account_mode", env="TRADING_ACCOUNT_MODE") or self.account_mode).upper()
-        self.account_mode = mode
-        self.tf_override = "AUTO"
-        self.symbols = resolve_universe("auto")
+        acc = self._resolve_account(rt)
+        self.account = acc
+        settings = acc.settings or rt
+        self.account_mode = acc.account_mode
+        self.tf_override = acc.timeframe
+        self.symbols = resolve_universe(acc.symbols)
         self.timeframe = TimeFrame.M15
-        if "master_bot_enabled" in rt:
-            self.master_bot_on = bool(rt.get("master_bot_enabled"))
-        self.risk.limits = self._limits_from(rt)
+        if "master_bot_enabled" in settings:
+            self.master_bot_on = bool(settings.get("master_bot_enabled"))
+        overlap_only = _overlap_only(settings)
+        self.calendar.overlap_only = overlap_only
+        # The pipeline runs its own trading-hours check; keep it on the same
+        # session config rather than letting it default to overlap-only.
+        if self.pipeline is not None and TradingHoursGuard is not None:
+            self.pipeline.hours_guard = TradingHoursGuard(overlap_only=overlap_only)
+        self.risk.limits = self._autopilot(settings, self._limits_from(settings))
+        # Keep the universe picker in step with the configured position cap,
+        # and let it propose one extra candidate per cycle -- the brains and
+        # risk engine remain the actual gatekeepers.
+        self.picker.max_open = self.risk.limits.max_open_positions
+        self.picker.max_new = 3
         if self.pipeline is not None:
-            self.pipeline.account_mode = mode
+            self.pipeline.account_mode = self.account_mode
         if self.portfolio is not None:
-            self.portfolio.account_mode = mode
+            self.portfolio.account_mode = self.account_mode
         if self.market_data is not None:
             self.market_data.symbols = self.symbols
-        self.strategies.configure_live(parse_strategy_names(rt.get("strategy_names")))
+        self.strategies.configure_live(parse_strategy_names(acc.strategy_names))
 
     def _mt5_creds(self, rt: dict) -> tuple[int | None, str, str, str | None]:
-        login_raw = _pick(rt, "mt5_login", "mt5_real_login", env="MT5_REAL_LOGIN")
-        password = _pick(rt, "mt5_password", "mt5_real_password", env="MT5_REAL_PASSWORD")
-        server = _pick(rt, "mt5_server", "mt5_real_server", env="MT5_REAL_SERVER")
-        path = _pick(rt, "mt5_path", "mt5_real_path", env="MT5_REAL_PATH") or None
-        login: int | None = None
-        if login_raw:
-            try:
-                login = int(login_raw)
-            except ValueError:
-                logger.error("MT5 login must be a number")
-        return login, password, server, path
+        acc = self._resolve_account(rt)
+        return acc.login, acc.password, acc.server, acc.path
 
     def _bind_broker(self, login: int, password: str, server: str, path: str | None) -> None:
-        self.broker = create_broker(BrokerType.MT5, login=login, password=password, server=server, path=path)
+        self.broker = create_broker(
+            BrokerType.MT5, login=login, password=password, server=server, path=path,
+            rpc_host=self.account.rpc_host, rpc_port=self.account.rpc_port,
+        )
         self.execution = ExecutionEngine(self.broker)
         self.positions = PositionManager(self.broker)
         self.portfolio = PortfolioManager(self.broker, self.positions, account_mode=self.account_mode)
@@ -242,7 +377,7 @@ class LiveRunner:
         self.market_data = MarketDataEngine(broker=self.broker, symbols=self.symbols, stale_threshold_seconds=60.0)
 
     async def start(self) -> None:
-        logger.info("LIVE runner waiting for MT5 credentials (dashboard Settings or env)")
+        logger.info("[%s] waiting for MT5 credentials (dashboard Settings or env)", self.log_tag)
         while True:
             rt = _load_runtime()
             self._apply_runtime(rt)
@@ -250,12 +385,12 @@ class LiveRunner:
             if login and password and server:
                 self._bind_broker(login, password, server, path)
                 break
-            logger.warning("MT5 login/password/server not set yet; retrying in 10s")
+            logger.warning("[%s] MT5 login/password/server not set yet; retrying in 10s", self.log_tag)
             await asyncio.sleep(10)
-        logger.info("LIVE runner starting | mode=%s | master=%s | symbols=%s", self.account_mode, "ON" if self.master_bot_on else "OFF", self.symbols)
+        logger.info("[%s] LIVE runner starting | mode=%s | master=%s | rpc=%s:%s | symbols=%s", self.log_tag, self.account_mode, "ON" if self.master_bot_on else "OFF", self.account.rpc_host, self.account.rpc_port, self.symbols)
         ok = await self.broker.connect()
         if not ok:
-            raise RuntimeError("LIVE MT5 connect failed. Need a running MT5 terminal (Windows or Wine) plus valid credentials.")
+            raise RuntimeError(f"[{self.log_tag}] MT5 connect failed. Need a running MT5 terminal (Windows or Wine) on {self.account.rpc_host}:{self.account.rpc_port} plus valid credentials.")
         await self.reconciler.reconcile()
         await self.market_data.start()
         self._running = True
@@ -272,7 +407,7 @@ class LiveRunner:
             await self.market_data.stop()
         if self.broker is not None:
             await self.broker.disconnect()
-        logger.info("LIVE runner stopped")
+        logger.info("[%s] LIVE runner stopped", self.log_tag)
 
     def set_master(self, on: bool) -> None:
         self.master_bot_on = on
@@ -291,15 +426,34 @@ class LiveRunner:
             acts = await self.trade_manager.flatten_all("ops flatten")
             for a in acts:
                 self.journal.append("flatten", reason="ops flatten", detail=a)
-            telegram_notify("Molido flatten-all requested")
+            telegram_notify("🔻 درخواست بستن همه پوزیشن‌ها")
         flat_ok, flat_why = self.calendar.should_flatten()
         if flat_ok and self.trade_manager is not None and self.positions and self.positions.count() > 0:
             acts = await self.trade_manager.flatten_all(flat_why)
             for a in acts:
                 self.journal.append("flatten", reason=flat_why, detail=a)
-            telegram_notify(f"Molido flatten: {flat_why}")
+            telegram_notify(f"🔻 بستن پوزیشن‌ها: {flat_why}")
         open_syms = []
         if self.positions is not None:
+            # Ask the broker what we actually hold before deciding whether to
+            # open more. Previously sync_from_broker() only ran inside
+            # _manage_open(), i.e. only for symbols already known to be open,
+            # and reconcile() ran once at startup -- so a fill the local
+            # manager missed stayed invisible for the rest of the run. The
+            # picker excludes open symbols, saw none, and re-entered the same
+            # setup every cycle: six GBPUSD SELLs in ten minutes on
+            # 2026-08-31, one signal turned into six positions. The broker is
+            # the authority on what is open; consult it before sizing up.
+            before = {str(p.ticket): p for p in self.positions.get_all()}
+            try:
+                await self.positions.sync_from_broker()
+            except Exception:
+                logger.exception("[%s] position sync failed; skipping new entries this cycle", self.log_tag)
+                return
+            after = {str(p.ticket) for p in self.positions.get_all()}
+            gone = [t for t in before if t not in after]
+            if gone:
+                await self._record_closes(gone, before)
             open_syms = list({p.symbol for p in self.positions.get_all()})
         for symbol in open_syms:
             try:
@@ -307,30 +461,157 @@ class LiveRunner:
             except Exception:
                 logger.exception("manage error on %s", symbol)
         sess_ok, sess_why = self.calendar.allow_new_entries()
+        # Status snapshot every cycle -- session-closed ones included -- so
+        # the dashboard's equity/positions view stays live around the clock.
+        try:
+            snap = await self.portfolio.snapshot()
+            write_status(
+                path=self.account.status_path(DATA_DIR),
+                account_id=self.account.id,
+                account_name=self.account.name,
+                snapshot=snap,
+                positions=self.positions.get_all() if self.positions else [],
+                master_on=self.master_bot_on,
+                account_mode=self.account_mode,
+                session_note=sess_why,
+                active_sessions=self.calendar.active_sessions(),
+            )
+        except Exception:
+            logger.exception("portfolio status snapshot failed")
+            snap = None
         if not sess_ok:
-            logger.info("LIVE session skip: %s", sess_why)
+            logger.info("[%s] session skip: %s", self.log_tag, sess_why)
             return
-        snap = await self.portfolio.snapshot()
-        logger.info("LIVE equity=%.2f | positions=%d | DD=%.2f%% | master=%s | sessions=%s", snap.equity, snap.open_positions, snap.drawdown_pct, "ON" if self.master_bot_on else "OFF", ",".join(self.calendar.active_sessions()) or "-")
+        if snap is None:
+            snap = await self.portfolio.snapshot()
+        logger.info("[%s] equity=%.2f | positions=%d | DD=%.2f%% | master=%s | sessions=%s", self.log_tag, snap.equity, snap.open_positions, snap.drawdown_pct, "ON" if self.master_bot_on else "OFF", ",".join(self.calendar.active_sessions()) or "-")
         stats = self.journal.journal_stats(20)
         if stats and stats["n"] >= 20 and stats["mean_r"] < 0 and self.brain.pause_on_negative_journal:
             logger.info("LIVE pause new entries: journal mean R=%.3f n=%s", stats["mean_r"], stats["n"])
             return
         overlap = "London_NY_Overlap" in self.calendar.active_sessions()
         picks = await self._pick_symbols(open_syms, overlap=overlap, session_ok=True)
-        logger.info("LIVE picker %s", ",".join(f"{c.symbol}:{c.score:.2f}" for c in picks) or "(none)")
+        logger.info("[%s] picker %s", self.log_tag, ",".join(f"{c.symbol}:{c.score:.2f}" for c in picks) or "(none)")
         for cand in picks:
+            # Evaluate on both M15 and M5 rather than a single resolved
+            # timeframe: several times the decision opportunities per cycle.
+            # M5 only when the spread supports it (its tighter stops are more
+            # spread-sensitive); the dead-ATR gate is timeframe-scaled so M5
+            # is judged by an M5-appropriate threshold. If the first
+            # timeframe opens a position, the no-average-down rule blocks a
+            # second entry on the same symbol, so this cannot double up.
+            # "auto" (the default) sweeps both bar sizes, which is what gives
+            # the brains several decision points per candidate. An explicit
+            # timeframe in settings pins entries to just that one -- it used to
+            # be ignored entirely: tf_override was hardcoded to "AUTO",
+            # self.timeframe to M15, and resolve_trade_timeframe was imported
+            # and never called, so the dashboard's timeframe control did
+            # nothing whatever it was set to.
+            if is_auto_timeframe(self.tf_override):
+                tfs = [TimeFrame.M15] + ([TimeFrame.M5] if cand.spread_ok else [])
+            else:
+                tfs = [resolve_trade_timeframe(self.tf_override, overlap=overlap, spread_ok=cand.spread_ok)]
+            for tf in tfs:
+                try:
+                    filled = await self._evaluate_symbol(
+                        cand.symbol,
+                        tf,
+                        h1_side=cand.h1_side,
+                        overlap=overlap,
+                        tick_spread=cand.spread,
+                        universe_score=cand.score,
+                    )
+                except Exception:
+                    logger.exception("LIVE cycle error on %s %s", cand.symbol, tf.value)
+                    continue
+                if filled:
+                    # One position per symbol per cycle. The picker excludes
+                    # symbols already open, but it reads a snapshot taken at
+                    # the top of the cycle, so M15 and M5 both saw XAUUSD as
+                    # flat and both opened a SELL seconds apart -- two
+                    # positions on one instrument, double the intended risk.
+                    # Sweeping both bar sizes is for more chances to find a
+                    # trade, not for taking the same one twice.
+                    logger.info("[%s] %s filled on %s; skipping its remaining timeframes this cycle", self.log_tag, cand.symbol, tf.value)
+                    break
+
+    async def _record_closes(self, tickets: list[str], before: dict) -> None:
+        """Write a close record, in R, for each position the broker has shut.
+
+        Nothing ever did this. The journal only held skip/veto/accept/fill, so
+        last_closed_r() always returned an empty list -- the loss streak was
+        permanently 0, the experience layer had nothing to learn from, and the
+        autopilot was pinned to its floor for good. Every outcome-driven
+        behaviour in the engine was running on an empty tank.
+
+        A position vanishing between two broker syncs means it closed, by stop,
+        target or hand. Realised profit comes from the broker's own deal
+        history and the risk it was opened with from the fill record, so R is
+        profit / risk -- comparable across symbols and sizes as dollars are not.
+        """
+        try:
+            risk_by_ticket = self.journal.risk_by_ticket()
+        except Exception:
+            logger.debug("could not read fill risks", exc_info=True)
+            risk_by_ticket = {}
+
+        for ticket in tickets:
+            pos = before.get(ticket)
+            symbol = getattr(pos, "symbol", None)
+            profit = None
             try:
-                await self._evaluate_symbol(
-                    cand.symbol,
-                    resolve_trade_timeframe(self.tf_override, overlap=overlap, spread_ok=cand.spread_ok),
-                    h1_side=cand.h1_side,
-                    overlap=overlap,
-                    tick_spread=cand.spread,
-                    universe_score=cand.score,
-                )
+                deals = self.broker._mt5.history_deals_get(position=int(ticket))
+                if deals:
+                    profit = sum(
+                        float(getattr(d, "profit", 0) or 0)
+                        + float(getattr(d, "swap", 0) or 0)
+                        + float(getattr(d, "commission", 0) or 0)
+                        for d in deals
+                    )
             except Exception:
-                logger.exception("LIVE cycle error on %s", cand.symbol)
+                logger.debug("deal history unavailable for %s", ticket, exc_info=True)
+
+            risk = risk_by_ticket.get(str(ticket))
+            r = round(profit / risk, 3) if (profit is not None and risk) else None
+
+            self.journal.append(
+                "close",
+                ticket=ticket,
+                symbol=symbol,
+                side=getattr(pos, "side", None),
+                profit=None if profit is None else round(profit, 2),
+                risk_amount=risk,
+                r_multiple=r,
+            )
+            if r is None:
+                logger.info("[%s] CLOSED %s %s (result unknown)", self.log_tag, symbol, ticket)
+                continue
+            logger.info("[%s] CLOSED %s %s -> %+.2f (%.2fR)", self.log_tag, symbol, ticket, profit, r)
+            telegram_notify(
+                ("🟢" if r > 0 else "🔴") + " <b>معامله بسته شد</b>" + '\n'
+                + "نماد: " + str(symbol) + '\n'
+                + "نتیجه: %+.2f$  (%+.2fR)" % (profit, r)
+            )
+
+    def _broker_now(self) -> datetime:
+        """Now, on the broker's clock -- the frame candle stamps are in."""
+        return datetime.now(timezone.utc) + timedelta(seconds=self._broker_clock_offset)
+
+    def _learn_clock_offset(self, tick) -> None:
+        """Track broker-vs-UTC drift from tick timestamps."""
+        t = getattr(tick, "time", None)
+        if t is None:
+            return
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        delta = (t - datetime.now(timezone.utc)).total_seconds()
+        # Ticks can be a little stale on a quiet symbol; only whole-hour-ish
+        # gaps are a real timezone difference, and never trust a wild value.
+        if abs(delta) < 120 or abs(delta) > 60 * 60 * 26:
+            return
+        if abs(delta - self._broker_clock_offset) > 60:
+            logger.info("[%s] broker clock offset %+.2fh vs UTC", self.log_tag, delta / 3600.0)
+        self._broker_clock_offset = delta
 
     async def _pick_symbols(self, open_syms: list[str], *, overlap: bool, session_ok: bool) -> list:
         ticks = {}
@@ -345,6 +626,7 @@ class LiveRunner:
                 tick = None
             ticks[symbol] = tick
             if tick is not None:
+                self._learn_clock_offset(tick)
                 rel = tick.spread / tick.mid if tick.mid else 9
                 spread_order.append((rel, symbol))
         spread_order.sort()
@@ -353,26 +635,38 @@ class LiveRunner:
         for symbol in h1_targets:
             try:
                 h1_raw = await self.market_data.get_candles(symbol, TimeFrame.H1, count=80, use_cache=True)
-                h1_bars = closed_bars(h1_raw, min_bars=30)
+                h1_bars = closed_bars(h1_raw, as_of=self._broker_now(), min_bars=30)
                 h1_map[symbol] = h1_side_from_bars(h1_bars)
             except (InsufficientDataError, Exception):
                 h1_map[symbol] = None
         rows: list[CheapCandidate] = []
-        for symbol in self.symbols:
+        for idx, symbol in enumerate(self.symbols):
             tick = ticks.get(symbol)
             spread = tick.spread if tick is not None else None
             mid = tick.mid if tick is not None else None
-            score, reasons, spread_ok = cheap_score(session_ok=session_ok, overlap=overlap, spread=spread, mid=mid, h1_side=h1_map.get(symbol))
+            # self.symbols keeps the order the account configured, so a
+            # symbol's index in it is its priority. Only the first two get a
+            # bonus, and it is small enough to settle near-equals without
+            # overriding a genuinely better candidate.
+            score, reasons, spread_ok = cheap_score(
+                session_ok=session_ok,
+                overlap=overlap,
+                spread=spread,
+                mid=mid,
+                h1_side=h1_map.get(symbol),
+                priority_rank=idx,
+            )
             rows.append(CheapCandidate(symbol=symbol, score=score, spread=spread, mid=mid, h1_side=h1_map.get(symbol), spread_ok=spread_ok, reasons=reasons))
         ranked = self.brain.rank_universe(self.picker.rank(rows))
         return self.picker.select(ranked, open_syms)
 
-    async def _evaluate_symbol(self, symbol: str, trade_tf: TimeFrame, *, h1_side: str | None, overlap: bool, tick_spread: float | None, universe_score: float | None = None) -> None:
+    async def _evaluate_symbol(self, symbol: str, trade_tf: TimeFrame, *, h1_side: str | None, overlap: bool, tick_spread: float | None, universe_score: float | None = None) -> bool:
+        """Evaluate one symbol on one timeframe. True if an order was filled."""
         raw = await self.market_data.get_candles(symbol, trade_tf, count=160, use_cache=False)
         if not raw:
-            return
+            return False
         try:
-            candles = closed_bars(raw, min_bars=30)
+            candles = closed_bars(raw, as_of=self._broker_now(), min_bars=30)
         except InsufficientDataError as exc:
             logger.debug("%s PIT: %s", symbol, exc)
             return
@@ -396,6 +690,7 @@ class LiveRunner:
         if brains:
             try:
                 record_decision(
+                    path=self.account.decisions_path(DATA_DIR),
                     symbol=symbol,
                     side=result.signal.side.value if result.signal else None,
                     allow=result.risk_allowed and not result.skipped_reason,
@@ -409,13 +704,22 @@ class LiveRunner:
                 logger.exception("decision log record failed for %s", symbol)
         if result.skipped_reason:
             logger.debug("%s skipped: %s", symbol, result.skipped_reason)
-            return
+            return False
         if result.exec_result and result.exec_result.success:
             side = result.signal.side.value if result.signal else "?"
             logger.info("%s LIVE FILL %s %.2f lots @ %s | tf=%s | regime=%s", symbol, side, result.lot_size, result.exec_result.fill_price, trade_tf.value, regime)
-            telegram_notify(f"Molido FILL {symbol} {side} {result.lot_size} @ {result.exec_result.fill_price} tf={trade_tf.value} regime={regime}")
+            telegram_notify(
+                "✅ <b>معامله باز شد</b>\n"
+                f"نماد: {symbol}\n"
+                f"جهت: {side}\n"
+                f"حجم: {result.lot_size} لات\n"
+                f"قیمت: {result.exec_result.fill_price}\n"
+                f"تایم‌فریم: {trade_tf.value} | رژیم بازار: {regime}"
+            )
+            return True
         elif result.exec_result and not result.exec_result.success:
             logger.warning("%s exec failed: %s", symbol, result.exec_result.message)
+        return False
 
     async def _manage_open(self, symbol: str) -> None:
         if self.trade_manager is None or self.positions is None:
@@ -424,7 +728,7 @@ class LiveRunner:
             return
         raw = await self.market_data.get_candles(symbol, self.timeframe, count=40)
         try:
-            candles = closed_bars(raw, min_bars=8) if raw else []
+            candles = closed_bars(raw, as_of=self._broker_now(), min_bars=8) if raw else []
         except InsufficientDataError:
             candles = []
         atr = None
@@ -445,9 +749,77 @@ class LiveRunner:
         await self.positions.sync_from_broker()
 
 
+class MultiAccountRunner:
+    """Supervises one LiveRunner per enabled account.
+
+    Accounts are independent: each has its own broker connection, risk
+    engine and journal, so one account hitting its circuit breaker, losing
+    its MT5 bridge, or crashing outright leaves the others trading. A
+    crashed account is restarted with capped backoff rather than taking the
+    process down, because a single bad account should not stop the rest.
+    """
+
+    def __init__(self, cycle_seconds: float = 15.0, restart_backoff_max: float = 120.0):
+        self.cycle_seconds = cycle_seconds
+        self.restart_backoff_max = restart_backoff_max
+        self._runners: dict[str, LiveRunner] = {}
+        self._running = False
+
+    async def _supervise(self, account: AccountConfig) -> None:
+        backoff = 5.0
+        while self._running:
+            runner = LiveRunner(account=account, cycle_seconds=self.cycle_seconds)
+            self._runners[account.id] = runner
+            try:
+                await runner.start()
+                # start() only returns when the runner stops on its own.
+                backoff = 5.0
+            except asyncio.CancelledError:
+                await runner.stop()
+                raise
+            except Exception:
+                logger.exception("[%s] runner crashed; restarting in %.0fs", account.id, backoff)
+                try:
+                    await runner.stop()
+                except Exception:
+                    logger.exception("[%s] error while stopping crashed runner", account.id)
+                if not self._running:
+                    return
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, self.restart_backoff_max)
+
+    async def start(self) -> None:
+        rt = _load_runtime()
+        accounts = enabled_accounts(rt)
+        if not accounts:
+            logger.error("no enabled accounts configured; nothing to run")
+            return
+        all_accounts = load_accounts(rt)
+        logger.info(
+            "starting %d of %d account(s): %s",
+            len(accounts), len(all_accounts), ", ".join(f"{a.id}({a.account_mode})" for a in accounts),
+        )
+        for a in all_accounts:
+            if not a.enabled:
+                logger.info("[%s] disabled in settings; not started", a.id)
+        self._running = True
+        try:
+            await asyncio.gather(*(self._supervise(a) for a in accounts))
+        finally:
+            await self.stop()
+
+    async def stop(self) -> None:
+        self._running = False
+        for acc_id, runner in list(self._runners.items()):
+            try:
+                await runner.stop()
+            except Exception:
+                logger.exception("[%s] error stopping runner", acc_id)
+
+
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s")
-    runner = LiveRunner()
+    runner = MultiAccountRunner()
     try:
         await runner.start()
     except KeyboardInterrupt:

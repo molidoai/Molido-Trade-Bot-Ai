@@ -14,9 +14,15 @@ class TradingHoursGuard:
         allowed_sessions: list[str] | None = None,
         block_weekends: bool = True,
         custom_windows: list[SessionWindow] | None = None,
+        overlap_only: bool = True,
     ):
         self.allowed_sessions = allowed_sessions
-        self.calendar = SessionCalendar(block_weekends=block_weekends)
+        # overlap_only was never forwarded, so this guard always fell back to
+        # SessionCalendar's own default of True and confined entries to the
+        # ~4h London/NY overlap no matter what the deployment had configured.
+        self.calendar = SessionCalendar(
+            block_weekends=block_weekends, overlap_only=overlap_only
+        )
         self.windows = custom_windows or FX_SESSIONS
 
     def allow_new_entries(self, now: datetime | None = None) -> tuple[bool, str]:

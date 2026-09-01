@@ -12,6 +12,7 @@ const NAV = [
   { href: "/positions", label: "پوزیشن‌ها" },
   { href: "/orders", label: "سفارش‌ها" },
   { href: "/strategies", label: "استراتژی‌ها" },
+  { href: "/accounts", label: "حساب‌ها" },
   { href: "/risk", label: "ریسک" },
   { href: "/performance", label: "عملکرد" },
   { href: "/journal", label: "ژورنال" },

@@ -10,6 +10,11 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
+from molido_shared.volatility import scale_atr_threshold
+
+
+def _today():
+    return datetime.now(timezone.utc).date()
 from molido_risk.models import (
     AccountState,
     RiskContext,
@@ -24,6 +29,11 @@ class RiskEngine:
         self.limits = limits or RiskLimits()
         self._circuit_open: bool = False
         self._circuit_reason: str | None = None
+        # Daily limits must clear when the day does. Anything account-level --
+        # max drawdown, a prop floor breach -- stays latched until a human
+        # looks at it.
+        self._circuit_scope: str = "account"
+        self._circuit_day = None
 
     def evaluate(self, ctx: RiskContext) -> RiskResult:
         """
@@ -33,7 +43,15 @@ class RiskEngine:
         reasons: list[str] = []
 
         if self._circuit_open:
-            return self._deny(f"Circuit breaker open: {self._circuit_reason}", checks)
+            # A daily-loss stop is meant to end the day, not the bot. Nothing
+            # in the codebase ever called reset_circuit(), so the first trip
+            # was permanent: the engine kept running, kept logging, and denied
+            # every trade until someone recreated the container. For an
+            # unattended bot that is indistinguishable from being broken.
+            if self._circuit_scope == "daily" and self._circuit_day != _today():
+                self.reset_circuit()
+            else:
+                return self._deny(f"Circuit breaker open: {self._circuit_reason}", checks)
 
         if ctx.is_exit or ctx.side == "EXIT":
             return RiskResult(
@@ -84,10 +102,12 @@ class RiskEngine:
 
         # ATR gate
         if ctx.atr is not None and ctx.entry:
-            dead = getattr(limits, "dead_atr_ratio", 0.0003)
+            dead = scale_atr_threshold(
+                getattr(limits, "dead_atr_ratio", 0.0003), ctx.timeframe
+            )
             if ctx.entry > 0 and ctx.atr / ctx.entry < dead:
                 return self._deny(
-                    f"ATR/close {ctx.atr / ctx.entry:.6f} < {dead} (dead market)",
+                    f"ATR/close {ctx.atr / ctx.entry:.6f} < {dead:.6f} (dead market, tf={ctx.timeframe or 'n/a'})",
                     checks,
                 )
             cap = getattr(limits, "atr_vs_stop_max", 1.2)
@@ -120,7 +140,7 @@ class RiskEngine:
             daily_loss_pct = -account.daily_pnl / account.equity if account.daily_pnl < 0 else 0.0
             checks["daily_loss"] = daily_loss_pct < limits.max_daily_loss
             if not checks["daily_loss"]:
-                self.trip_circuit(f"Daily loss limit hit ({daily_loss_pct:.2%})")
+                self.trip_circuit(f"Daily loss limit hit ({daily_loss_pct:.2%})", scope="daily")
                 return self._deny(
                     f"Daily loss {daily_loss_pct:.2%} >= limit {limits.max_daily_loss:.2%}",
                     checks,
@@ -128,6 +148,46 @@ class RiskEngine:
         else:
             checks["daily_loss"] = False
             return self._deny("Equity is zero or negative", checks)
+
+        # Consecutive-loss brake. max_consecutive_losses and
+        # consecutive_loss_pause_seconds have been in RiskLimits from the
+        # start and no code ever read them, so a losing streak did nothing at
+        # all -- the bot kept taking full-size trades straight through it.
+        # This is the "get more careful after losses" behaviour the limits
+        # always promised.
+        if limits.max_consecutive_losses > 0 and account.consecutive_losses >= limits.max_consecutive_losses:
+            paused = True
+            if account.last_loss_at is not None and limits.consecutive_loss_pause_seconds > 0:
+                last = account.last_loss_at
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+                paused = elapsed < limits.consecutive_loss_pause_seconds
+                remaining = limits.consecutive_loss_pause_seconds - elapsed
+            else:
+                remaining = limits.consecutive_loss_pause_seconds
+            checks["loss_streak"] = not paused
+            if paused:
+                return self._deny(
+                    f"{account.consecutive_losses} consecutive losses; pausing new entries "
+                    f"for another {max(0, remaining) / 60:.0f} min",
+                    checks,
+                )
+        else:
+            checks["loss_streak"] = True
+
+        # Prop hard floor, checked before the trailing drawdown rule because
+        # it is the one that ends the challenge. Measured from the starting
+        # balance the firm set, so it does not move with peak_equity.
+        floor = limits.prop_initial_balance * (1.0 - limits.prop_max_loss_pct)
+        if limits.prop_initial_balance > 0:
+            checks["prop_floor"] = account.equity > floor
+            if not checks["prop_floor"]:
+                self.trip_circuit(f"Prop max-loss floor hit (equity {account.equity:.2f} <= {floor:.2f})")
+                return self._deny(
+                    f"Equity {account.equity:.2f} at or below prop floor {floor:.2f}",
+                    checks,
+                )
 
         peak = account.peak_equity or account.equity
         if peak > 0:
@@ -265,13 +325,18 @@ class RiskEngine:
             },
         )
 
-    def trip_circuit(self, reason: str) -> None:
+    def trip_circuit(self, reason: str, scope: str = "account") -> None:
+        """Open the breaker. scope="daily" clears itself on the next day."""
         self._circuit_open = True
         self._circuit_reason = reason
+        self._circuit_scope = scope
+        self._circuit_day = _today()
 
     def reset_circuit(self) -> None:
         self._circuit_open = False
         self._circuit_reason = None
+        self._circuit_scope = "account"
+        self._circuit_day = None
 
     @property
     def circuit_open(self) -> bool:

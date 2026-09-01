@@ -47,7 +47,11 @@ def notify(text: str) -> None:
     for chat_id in _chat_ids(rt):
         try:
             url = f"https://api.telegram.org/bot{token}/sendMessage"
-            body = urllib.parse.urlencode({"chat_id": chat_id, "text": text[:3500]}).encode()
+            body = urllib.parse.urlencode(
+                # parse_mode=HTML so the <b> tags in the Persian reports render as
+                # bold instead of showing up as literal markup.
+                {"chat_id": chat_id, "text": text[:3500], "parse_mode": "HTML"}
+            ).encode()
             req = urllib.request.Request(url, data=body, method="POST")
             urllib.request.urlopen(req, timeout=8).read()
         except Exception:

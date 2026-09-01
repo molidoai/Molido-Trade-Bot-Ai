@@ -117,6 +117,57 @@ class TradeJournal:
         out.reverse()
         return out
 
+    def risk_by_ticket(self) -> dict[str, float]:
+        """Risk amount each open trade was sized with, keyed by ticket.
+
+        A close is only meaningful in R, and R needs the risk the position was
+        opened with -- which lives on the fill record, not on the broker's
+        deal history.
+        """
+        out: dict[str, float] = {}
+        for rec in self._read():
+            if rec.get("event") != "fill":
+                continue
+            ticket = rec.get("ticket")
+            risk = rec.get("risk_amount")
+            if ticket is None or risk is None:
+                continue
+            try:
+                out[str(ticket)] = float(risk)
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def last_close_time(self):
+        """Timestamp of the most recent closed trade, for the pause window."""
+        from datetime import datetime, timezone
+        for rec in reversed(self._read()):
+            if rec.get("event") not in ("close", "exit", "flatten"):
+                continue
+            ts = rec.get("ts")
+            if not ts:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            except Exception:
+                continue
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        return None
+
+    def loss_streak(self, n: int = 20) -> int:
+        """How many of the most recent closed trades lost, consecutively.
+
+        RiskLimits has carried max_consecutive_losses since the beginning and
+        nothing ever computed the streak, so the limit could never fire.
+        """
+        streak = 0
+        for r in reversed(self.last_closed_r(n)):
+            if r < 0:
+                streak += 1
+            else:
+                break
+        return streak
+
     def journal_stats(self, n: int = 20) -> dict[str, float | int] | None:
         rs = self.last_closed_r(n)
         if not rs:

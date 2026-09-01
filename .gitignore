@@ -6,6 +6,9 @@
 *.key
 secrets/
 
+# Claude Code local session state
+.claude/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -18,7 +21,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+# Python build output only -- anchored, because a bare "lib/" also swallowed
+# frontend/lib/, so the dashboard's api.ts and auth.ts were never tracked and
+# today's server-side-fetch fix lived only on the server.
+/lib/
 lib64/
 parts/
 sdist/
