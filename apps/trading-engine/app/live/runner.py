@@ -24,7 +24,7 @@ from molido_execution import ExecutionEngine
 from molido_portfolio import PositionManager, PortfolioManager, Reconciler
 from molido_portfolio.trade_manager import TradeManager
 from molido_regime import MarketRegimeEngine
-from molido_guards import SessionCalendar, NewsBlackoutGuard, default_calendar_path
+from molido_guards import SessionCalendar, NewsBlackoutGuard, TradingHoursGuard, default_calendar_path
 from molido_strategies.engine import parse_strategy_names
 from molido_brain import (
     DecisionBrain,
@@ -261,7 +261,12 @@ class LiveRunner:
         self.timeframe = TimeFrame.M15
         if "master_bot_enabled" in settings:
             self.master_bot_on = bool(settings.get("master_bot_enabled"))
-        self.calendar.overlap_only = _overlap_only(settings)
+        overlap_only = _overlap_only(settings)
+        self.calendar.overlap_only = overlap_only
+        # The pipeline runs its own trading-hours check; keep it on the same
+        # session config rather than letting it default to overlap-only.
+        if self.pipeline is not None and TradingHoursGuard is not None:
+            self.pipeline.hours_guard = TradingHoursGuard(overlap_only=overlap_only)
         self.risk.limits = self._limits_from(settings)
         # Keep the universe picker in step with the configured position cap,
         # and let it propose one extra candidate per cycle -- the brains and

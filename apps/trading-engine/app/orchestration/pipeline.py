@@ -77,6 +77,7 @@ class TradingPipeline:
         brain: object | None = None,
         journal: object | None = None,
         news_guard: object | None = None,
+        hours_guard: object | None = None,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -90,6 +91,10 @@ class TradingPipeline:
         self.risk_limits = risk_limits or self.risk.limits
         self.journal = journal
         self.news_guard = news_guard
+        # Set by the runner from the same session config its own calendar uses.
+        # Left None this falls back to a default-constructed guard, which is
+        # overlap-only -- see the call site.
+        self.hours_guard = hours_guard
         if brain is not None:
             self.brain = brain
         elif DecisionBrain is not None:
@@ -124,8 +129,17 @@ class TradingPipeline:
             self._journal("skip", symbol=symbol, reason="Master bot is OFF")
             return PipelineResult(skipped_reason="Master bot is OFF")
 
-        if TradingHoursGuard is not None:
-            ok_h, why_h = TradingHoursGuard().allow_new_entries()
+        hours = self.hours_guard
+        if hours is None and TradingHoursGuard is not None:
+            # Constructing a fresh guard here ignored session_overlap_only
+            # entirely: the runner gated the cycle on its correctly configured
+            # calendar, then this unconfigured one vetoed every symbol anyway
+            # with "New entries only in London/NY overlap". The setting was
+            # loaded, persisted and threaded -- and then overridden by a
+            # default. Prefer the guard the runner configured.
+            hours = TradingHoursGuard()
+        if hours is not None:
+            ok_h, why_h = hours.allow_new_entries()
             if not ok_h:
                 self._journal("skip", symbol=symbol, reason=f"TradingHours: {why_h}")
                 return PipelineResult(skipped_reason=f"TradingHours: {why_h}")
