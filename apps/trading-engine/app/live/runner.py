@@ -481,11 +481,22 @@ class LiveRunner:
             except (InsufficientDataError, Exception):
                 h1_map[symbol] = None
         rows: list[CheapCandidate] = []
-        for symbol in self.symbols:
+        for idx, symbol in enumerate(self.symbols):
             tick = ticks.get(symbol)
             spread = tick.spread if tick is not None else None
             mid = tick.mid if tick is not None else None
-            score, reasons, spread_ok = cheap_score(session_ok=session_ok, overlap=overlap, spread=spread, mid=mid, h1_side=h1_map.get(symbol))
+            # self.symbols keeps the order the account configured, so a
+            # symbol's index in it is its priority. Only the first two get a
+            # bonus, and it is small enough to settle near-equals without
+            # overriding a genuinely better candidate.
+            score, reasons, spread_ok = cheap_score(
+                session_ok=session_ok,
+                overlap=overlap,
+                spread=spread,
+                mid=mid,
+                h1_side=h1_map.get(symbol),
+                priority_rank=idx,
+            )
             rows.append(CheapCandidate(symbol=symbol, score=score, spread=spread, mid=mid, h1_side=h1_map.get(symbol), spread_ok=spread_ok, reasons=reasons))
         ranked = self.brain.rank_universe(self.picker.rank(rows))
         return self.picker.select(ranked, open_syms)

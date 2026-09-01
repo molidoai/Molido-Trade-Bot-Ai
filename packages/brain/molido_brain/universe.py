@@ -101,6 +101,23 @@ class CheapCandidate:
     reasons: list[str] = field(default_factory=list)
 
 
+# Bonus applied to the first two symbols in the configured list, so the order
+# the symbols are written in is the priority order. Deliberately small: it is
+# enough to settle candidates that scored within a hair of each other (the
+# majors routinely land within 0.01), and nowhere near enough to lift a symbol
+# over one that is genuinely better -- a wide spread still costs 0.25 or an
+# outright rejection. Priority decides between near-equals; it does not
+# override the assessment.
+PRIORITY_BONUS: tuple[float, ...] = (0.10, 0.05)
+
+
+def priority_bonus(rank: int | None) -> float:
+    """Bonus for a symbol's position in the configured universe (0 = first)."""
+    if rank is None or rank < 0 or rank >= len(PRIORITY_BONUS):
+        return 0.0
+    return PRIORITY_BONUS[rank]
+
+
 def cheap_score(
     *,
     session_ok: bool,
@@ -109,6 +126,7 @@ def cheap_score(
     mid: float | None,
     h1_side: str | None = None,
     atr_ratio: float | None = None,
+    priority_rank: int | None = None,
 ) -> tuple[float, list[str], bool]:
     reasons: list[str] = []
     if not session_ok:
@@ -157,6 +175,10 @@ def cheap_score(
             reasons.append("hot ATR")
         else:
             score += 0.15
+    bonus = priority_bonus(priority_rank)
+    if bonus:
+        score += bonus
+        reasons.append("priority #%d" % ((priority_rank or 0) + 1))
     return score, reasons, spread_ok
 
 
