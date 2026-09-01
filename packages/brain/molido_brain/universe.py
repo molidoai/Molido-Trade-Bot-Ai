@@ -134,6 +134,14 @@ def cheap_score(
             reasons.append("tight spread")
         else:
             score += 0.1
+        # Break ties by how tight the spread actually is. The buckets above put
+        # most majors on an identical score (observed live: EURUSD, GBPUSD and
+        # USDJPY all at exactly 1.65), and since sorting is stable that left the
+        # ranking decided by position in DEFAULT_UNIVERSE -- XAUUSD, being last,
+        # could never be selected however good its spread was. Capped well under
+        # the 0.25 gap between the buckets so it only orders symbols already
+        # judged equal; it can never promote a wide spread over a tight one.
+        score += 0.05 * (1.0 - min(rel / cap, 1.0))
     if h1_side in ("BUY", "SELL"):
         score += 0.3
         reasons.append(f"h1={h1_side}")

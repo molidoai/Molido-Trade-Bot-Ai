@@ -168,7 +168,7 @@ class LiveRunner:
         self.log_tag = account.id
         acc_settings = account.settings or rt
         self.tf_override = "AUTO"
-        self.symbols = resolve_universe("auto")
+        self.symbols = resolve_universe(account.symbols)
         self.timeframe = TimeFrame.M15
         self.picker = UniversePicker()
         self.cycle_seconds = cycle_seconds
@@ -242,7 +242,7 @@ class LiveRunner:
         settings = acc.settings or rt
         self.account_mode = acc.account_mode
         self.tf_override = "AUTO"
-        self.symbols = resolve_universe("auto")
+        self.symbols = resolve_universe(acc.symbols)
         self.timeframe = TimeFrame.M15
         if "master_bot_enabled" in settings:
             self.master_bot_on = bool(settings.get("master_bot_enabled"))
