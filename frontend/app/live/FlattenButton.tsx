@@ -1,15 +1,14 @@
 "use client";
 
 import { useState } from "react";
-
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+import { API, getToken } from "@/lib/auth";
 
 export function FlattenButton() {
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function flatten() {
-    const token = typeof window !== "undefined" ? localStorage.getItem("molido_token") || "" : "";
+    const token = getToken();
     if (!token) {
       setMsg("لاگین ادمین لازم است (صفحه تنظیمات)");
       return;

@@ -22,11 +22,12 @@ from molido_risk import RiskEngine, RiskContext, RiskLimits, AccountState, RiskD
 from molido_execution import ExecutionEngine, ExecRequest, ExecResult
 from molido_portfolio import PositionManager, PortfolioManager, Reconciler
 try:
-    from molido_guards import TradingHoursGuard, NewsBlackoutGuard, correlated_block
+    from molido_guards import TradingHoursGuard, NewsBlackoutGuard, correlated_block, default_calendar_path
     from molido_regime import MarketRegimeEngine
 except ImportError:
     TradingHoursGuard = NewsBlackoutGuard = MarketRegimeEngine = None  # type: ignore
     correlated_block = None  # type: ignore
+    default_calendar_path = None  # type: ignore
 try:
     from molido_execution.limit_entry import entry_limit_price
 except ImportError:
@@ -39,6 +40,10 @@ try:
     from molido_brain import DecisionBrain
 except ImportError:
     DecisionBrain = None  # type: ignore
+try:
+    from molido_regime import get_default_detector as get_ml_vol_detector
+except ImportError:
+    get_ml_vol_detector = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +131,8 @@ class TradingPipeline:
 
         guard = self.news_guard
         if guard is None and NewsBlackoutGuard is not None:
-            guard = NewsBlackoutGuard()
+            path = default_calendar_path() if default_calendar_path is not None else None
+            guard = NewsBlackoutGuard(calendar_path=path)
             try:
                 guard.load_from_disk()
             except Exception:
@@ -302,6 +308,12 @@ class TradingPipeline:
                 )
 
         limits = self.risk.limits
+        ml_high_vol_prob = None
+        if get_ml_vol_detector is not None:
+            try:
+                ml_high_vol_prob = get_ml_vol_detector().high_vol_probability(candles)
+            except Exception:
+                logger.exception("ML volatility signal failed for %s; continuing without it", symbol)
         risk_ctx = RiskContext(
             symbol=symbol,
             side=final.side.value,
@@ -313,6 +325,7 @@ class TradingPipeline:
             spread_points=spread_pts,
             atr=atr_val,
             regime=regime,
+            ml_high_vol_prob=ml_high_vol_prob,
             account=account_state,
             limits=limits,
         )

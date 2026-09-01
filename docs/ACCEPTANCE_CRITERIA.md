@@ -1,4 +1,4 @@
-# Acceptance Criteria – LIVE enabled
+# Acceptance Criteria
 
 | Criterion | Status |
 |-----------|--------|
@@ -14,7 +14,7 @@
 | Dashboard Next.js (3D LIVE deck) | ✅ |
 | Telegram bot commands | ✅ |
 | Metrics + anomaly + security checks | ✅ |
-| Live mode default (REAL + master ON) | ✅ |
+| Safe default (DEMO + master OFF); REAL requires 2-step confirm | ✅ |
 | News Blackout Guard | ✅ (needs calendar data for strict mode) |
 | Demo broker live test | ⏳ You – VPS + MT5 terminal |
 | MT5 live `place_order` full path | ⏳ Adapter still returns not-enabled until terminal + package |

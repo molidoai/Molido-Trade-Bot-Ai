@@ -15,7 +15,7 @@ _LOCK = Lock()
 
 DEFAULTS = {
     "trading_account_mode": "DEMO",
-    "master_bot_enabled": True,
+    "master_bot_enabled": False,
     "mt5_login": "",
     "mt5_password": "",
     "mt5_server": "",

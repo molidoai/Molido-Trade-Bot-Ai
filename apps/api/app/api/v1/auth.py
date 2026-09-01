@@ -29,6 +29,14 @@ _MAX_FAILS = 8
 
 
 def _client_ip(request: Request) -> str:
+    # X-Real-IP is set (overwritten, not appended) by our nginx config from
+    # $remote_addr, so a client can't spoof it to dodge the login lockout.
+    # X-Forwarded-For is client-controllable unless every hop in front of us
+    # is trusted to overwrite it too, so it's only a fallback for deployments
+    # without our nginx in front (e.g. local dev).
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
         return forwarded.split(",")[0].strip()

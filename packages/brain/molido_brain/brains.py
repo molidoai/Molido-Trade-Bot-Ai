@@ -267,6 +267,11 @@ class Brain1Setup:
                         f"hard veto: spread {float(spread):.5f} > {self.max_spread_stop:.0%} of stop {snap.stop_distance:.5f}"
                     ],
                 )
+        if "unknown" in snap.regime_s and snap.vol > 1.4:
+            return BrainVote(
+                "setup", False, 0.0,
+                reasons + [f"hard veto: unknown regime + high vol (vol={snap.vol:.2f})"],
+            )
         reasons.append(f"spread/stop={snap.spread_stop:.3f}")
         return BrainVote("setup", True, 1.0, reasons)
 
@@ -368,8 +373,9 @@ class Brain3Survival:
                         f"hard veto: ATR {snap.atr:.5f} > {self.atr_vs_stop_max} x stop {snap.stop_distance:.5f}"
                     ],
                 )
-        if "unknown" in snap.regime_s and snap.vol > 1.5:
-            return BrainVote("survival", False, 0.0, reasons + ["hard veto: unknown regime + high vol"])
+        # "unknown regime + high vol" is a hard, binary gate (not a magnitude
+        # judgment), so it's checked once in Brain1Setup — never reachable
+        # here since a Brain1 veto stops the series before Brain3 runs.
 
         if symbol:
             ok_c, why_c = correlated_block(symbol, open_symbols or [])

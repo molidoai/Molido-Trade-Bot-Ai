@@ -33,7 +33,8 @@ def _ctx(account=None, **kw) -> RiskContext:
         risk_reward=2.0,
         spread_points=1.2,
         account=account or _account(),
-        limits=RiskLimits(),
+        # No default limits here — leave None so the engine's own configured
+        # `self.limits` applies unless a test explicitly passes limits=....
     )
     defaults.update(kw)
     return RiskContext(**defaults)

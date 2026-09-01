@@ -9,7 +9,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY apps/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY packages/security /packages/security
 COPY apps/api/app ./app
+
+ENV PYTHONPATH=/packages/security
 
 EXPOSE 8000
 

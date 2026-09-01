@@ -2,6 +2,7 @@
 Molido Trade Bot AI - FastAPI Application Entry Point
 """
 
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,7 +11,13 @@ from fastapi.responses import JSONResponse
 from app.core.config import get_settings
 from app.api.v1 import api_router
 
+try:
+    from molido_security.checks import check_env_safety
+except ImportError:  # pragma: no cover
+    check_env_safety = None  # type: ignore
+
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -21,6 +28,17 @@ async def lifespan(app: FastAPI):
     print(f"Master Bot      : {'ON' if settings.master_bot_enabled else 'OFF'}")
     print(f"Live            : {'YES' if settings.is_real_account and settings.master_bot_enabled else 'NO'}")
     print(f"Debug           : {settings.debug}")
+    if check_env_safety is not None:
+        report = check_env_safety()
+        for w in report.warnings:
+            logger.warning("env safety: %s", w)
+        for f in report.findings:
+            logger.error("env safety: %s", f)
+        if not report.ok and settings.is_production:
+            raise RuntimeError(
+                "Refusing to start in production with unsafe env config: "
+                + "; ".join(report.findings)
+            )
     yield
     print("Shutting down gracefully...")
 

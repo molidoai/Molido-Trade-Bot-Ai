@@ -36,9 +36,15 @@ class Settings(BaseSettings):
     redis_password: str | None = None
     redis_db: int = 0
 
-    # Live is the intended mode. Operator asked to keep REAL + master ON.
-    trading_account_mode: Literal["DEMO", "PROP", "REAL"] = "REAL"
-    master_bot_enabled: bool = True
+    # Safe-by-default (Master Prompt / PRODUCTION_HARDENING.md): never start on
+    # REAL or with the master bot ON. Going live requires an explicit,
+    # authenticated 2-step confirmation via POST /ops/mode + POST /ops/master.
+    trading_account_mode: Literal["DEMO", "PROP", "REAL"] = "DEMO"
+    master_bot_enabled: bool = False
+
+    # Shared secret trading-engine sends on POST /ops/heartbeat so the
+    # endpoint isn't wide open on the internal docker network.
+    engine_internal_token: str = Field(..., min_length=16)
 
     mt5_demo_login: int | None = None
     mt5_demo_password: str | None = None
@@ -124,9 +130,9 @@ class Settings(BaseSettings):
     @field_validator("trading_account_mode")
     @classmethod
     def validate_mode(cls, v: str) -> str:
-        mode = (v or "REAL").upper()
+        mode = (v or "DEMO").upper()
         if mode not in ("DEMO", "PROP", "REAL"):
-            return "REAL"
+            return "DEMO"
         return mode
 
 
