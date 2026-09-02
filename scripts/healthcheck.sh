@@ -67,28 +67,16 @@ else
 fi
 
 head_ "Data freshness"
-# The bug that made every signal act on three-hour-old prices was invisible
-# until someone compared a candle to the clock. Check it every time.
-docker exec molido-engine python3 - <<'PY' 2>/dev/null || echo "  (could not evaluate)"
-import os, json, asyncio
-from datetime import datetime, timezone
-from molido_broker import create_broker, BrokerType
-from molido_shared.types import TimeFrame
-from molido_shared.point_in_time import bar_close_time
-rt = json.load(open('/app/data/runtime-settings.json'))
-async def go():
-    b = create_broker(BrokerType.MT5, login=int(rt['mt5_login']), password=rt['mt5_password'],
-                      server=rt['mt5_server'],
-                      rpc_host=os.getenv('MT5_RPC_HOST', 'host.docker.internal'), rpc_port=8001)
-    await b.connect()
-    sym = (rt.get('symbols') or 'EURUSD').split(',')[0].strip()
-    t = await b.get_tick(sym)
-    cs = await b.get_candles(sym, TimeFrame.M15, count=3)
-    gap = abs(t.mid - float(cs[-1].close))
-    off = (bar_close_time(cs[-1]).replace(tzinfo=timezone.utc) - datetime.now(timezone.utc)).total_seconds() / 3600
-    print('  %-6s tick-vs-last-close gap %.5f | broker clock %+.2fh vs UTC' % (sym, gap, off))
-asyncio.run(go())
-PY
+# Kept in its own file rather than a nested heredoc: the inline version
+# silently produced no output at all over ssh, which is the worst kind of
+# check -- one that looks like it passed because it never ran.
+docker cp /opt/molido/freshness.py molido-engine:/tmp/freshness.py >/dev/null 2>&1
+if docker exec molido-engine python3 /tmp/freshness.py 2>/dev/null; then
+  :
+else
+  rc=$?
+  [ $rc -ge 1 ] && FAILS=$((FAILS+rc))
+fi
 
 head_ "Trading state"
 python3 - <<PY
