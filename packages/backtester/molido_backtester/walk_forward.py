@@ -56,6 +56,7 @@ def walk_forward(
     strategy_engine: StrategyEngine | None = None,
     initial_capital: float = 10_000.0,
     risk_per_trade: float = 0.0025,
+    regime: str = "Bull",
 ) -> WalkForwardResult:
     step = step or test_bars
     costs = cost_model or CostModel(spread_points=1.2, slippage_points=0.5, commission_per_lot=7.0)
@@ -86,7 +87,13 @@ def walk_forward(
         oos_warmup = max(warmup, train_end - 1)
         if oos_warmup >= test_end - 2:
             oos_warmup = max(10, test_start - 5)
-        oos = engine.run(oos_window, symbol, timeframe, warmup=min(oos_warmup, test_end - 5), regime="Bull")
+        # regime was hardcoded to "Bull", which silently excluded every strategy
+        # whose allowed_regimes does not contain it -- RSIMeanReversion is
+        # Sideways/Low-Volatility only, so it produced zero trades across
+        # twenty folds and looked like it had no edge when it had never been
+        # allowed to run. Live computes the regime per bar; here the caller
+        # names the regime it wants a strategy judged in.
+        oos = engine.run(oos_window, symbol, timeframe, warmup=min(oos_warmup, test_end - 5), regime=regime)
         test_open = candles[test_start].open_time
         test_close = candles[test_end - 1].open_time
         kept = [t for t in oos.trades if t.entry_time is not None and test_open <= t.entry_time <= test_close]
