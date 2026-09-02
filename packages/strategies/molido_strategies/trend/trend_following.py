@@ -19,7 +19,19 @@ class TrendFollowingStrategy(Strategy):
         fast_period: int = 9,
         slow_period: int = 21,
         atr_sl_mult: float = 1.5,
-        rr: float = 2.0,
+        # 3.0, not 2.0, on walk-forward evidence rather than preference.
+        # At 2.0 the target sits exactly at the strategy's own breakeven: the
+        # measured out-of-sample win rate is 33.6% and 2.0 needs 33.3%, which
+        # is why pre-cost expectancy came out at -2.9 across 330 trades --
+        # zero to within rounding -- and every penny of friction went straight
+        # to the loss. At 3.0 the same entries produce +528 pre-cost across
+        # 203 trades and 11 of 20 folds in profit against 7 of 20.
+        #
+        # It wins under all four cost models tested, not just the favourable
+        # ones, so this is not a knife-edge fit. It is still only validated on
+        # EURUSD H1, and the result only clears PF 1.0 on a raw/ECN cost
+        # structure -- on the current model it is 0.95, better but still short.
+        rr: float = 3.0,
         min_confidence: float = 55.0,
         **kwargs,
     ):

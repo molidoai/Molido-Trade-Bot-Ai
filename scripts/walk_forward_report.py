@@ -249,14 +249,30 @@ def main() -> None:
     # folds hold up rather than on pooled PF, is the most this data supports.
     # Current live values are rr=2.0, sl=1.5 ATR -- the first row is the
     # baseline everything else must beat.
+    # rr=3.0 / sl=1.5 was the clear winner of the parameter sweep (pre-cost
+    # +528 vs -2.9, folds in profit 11/20 vs 7/20). Carry it and the shipped
+    # baseline forward; the question now is cost, not parameters.
     PARAM_GRID = [
-        (2.0, 1.5),   # as shipped
-        (3.0, 1.5),   # further target, same stop
-        (2.0, 2.5),   # same target, wider stop
-        (3.0, 2.5),   # both
+        (3.0, 1.5),   # best from the sweep
+        (2.0, 1.5),   # as shipped, for comparison
     ]
 
-    costs = CostModel(spread_points=1.2, slippage_points=0.5, commission_per_lot=7.0)
+    # Cost scenarios. The parameter sweep showed the strategy has a real edge
+    # at rr=3.0 -- +2.60 per trade before friction -- that is simply smaller
+    # than the 3.57 it pays to trade. So the open question is no longer "is
+    # there an edge" but "does any realistic broker leave enough of it".
+    #
+    # These are account types, not wishes: a standard account pays a wider
+    # spread and no commission, a raw/ECN account pays a thin spread plus
+    # commission per lot. The last row is deliberately optimistic so it is
+    # clear what the ceiling looks like even under generous assumptions -- if
+    # PF stays under 1 there, no broker fixes this.
+    COST_GRID = [
+        ("current model",   CostModel(spread_points=1.2, slippage_points=0.5, commission_per_lot=7.0)),
+        ("raw/ECN",         CostModel(spread_points=0.3, slippage_points=0.5, commission_per_lot=6.0)),
+        ("zero-commission", CostModel(spread_points=1.5, slippage_points=0.5, commission_per_lot=0.0)),
+        ("best case",       CostModel(spread_points=0.2, slippage_points=0.3, commission_per_lot=3.0)),
+    ]
 
     # M15's verdict is already in (0/16 folds, PF 0.58), and re-running it
     # costs hours that H1/H4 need. WF_TF lets a run skip straight to the
@@ -283,6 +299,7 @@ def main() -> None:
             print("########## %s (%d bars, train=%d test=%d) ##########" % (tf_name, len(bars), train, test))
             for label, strategies, regime in configs:
               for rr, slm in PARAM_GRID:
+               for cost_name, costs in COST_GRID:
                 ind, strat = engines_with(strategies[0], rr=rr, atr_sl_mult=slm)
                 res = walk_forward(
                     bars, symbol, tf,
@@ -290,7 +307,7 @@ def main() -> None:
                     cost_model=costs, indicator_engine=ind, strategy_engine=strat,
                     regime=regime,
                 )
-                row = report("%s / %s [rr=%.1f sl=%.1fATR]" % (tf_name, label, rr, slm), res)
+                row = report("%s rr=%.1f sl=%.1f | %s" % (tf_name, rr, slm, cost_name), res)
                 # Cost share is the number that explains M15: 88% of the loss
                 # there was friction, so track it per timeframe.
                 m = res.metrics
