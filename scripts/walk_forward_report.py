@@ -110,6 +110,35 @@ def resample(candles: list[Candle], factor: int, timeframe: TimeFrame) -> list[C
     return out
 
 
+def engines_with(strategy: str, **params) -> tuple[IndicatorEngine, StrategyEngine]:
+    """One strategy, constructed with explicit parameters.
+
+    The strategies set their own take-profit at a fixed multiple of the stop
+    (tp = price + rr * risk), so R:R is a design constant and not a property
+    of the setup -- filtering on it selects nothing, which a sweep of
+    min_risk_reward confirmed: 1.5 changed no trades at all and 2.0 made the
+    result worse. The parameters themselves are the only real lever.
+    """
+    ind = IndicatorEngine()
+    for name, kw in (
+        ("MultiEMA", {}), ("RSI", {"period": 14}), ("ATR", {"period": 14}),
+        ("MACD", {}), ("BollingerBands", {"period": 20}),
+        ("DonchianChannel", {"period": 20}),
+        ("Supertrend", {"period": 10, "multiplier": 3.0}),
+    ):
+        try:
+            ind.add_from_registry(name, **kw)
+        except Exception:
+            pass
+    strat = StrategyEngine()
+    try:
+        strat.add_from_registry(strategy, **params)
+        strat.enable(strategy)
+    except Exception as exc:
+        print("  (could not build %s with %s: %s)" % (strategy, params, exc))
+    return ind, strat
+
+
 def engines(strategies: list[str]) -> tuple[IndicatorEngine, StrategyEngine]:
     ind = IndicatorEngine()
     # Mirror what the live engine registers. The harness previously loaded
@@ -209,6 +238,24 @@ def main() -> None:
     configs = [(name.strip(), [name.strip()], REGIME_FOR.get(name.strip(), "Bull"))
                for name in (os.getenv("WF_STRATEGIES") or default_cfg).split(",") if name.strip()]
 
+    # Sweep the minimum reward-to-risk a trade must offer. At the measured
+    # 33.6% win rate, breakeven needs R:R 1.98 -- so the live setting of 1.5
+    # is arithmetically a losing filter, and every trade it lets through
+    # between 1.5 and 1.98 has negative expectancy before anything else goes
+    # wrong. This measures whether raising it actually helps out of sample, or
+    # whether it just trades less and loses the same.
+    # Deliberately small. Sweeping a wide grid and keeping the best cell is
+    # how a backtest is made to lie; a handful of points, judged on how many
+    # folds hold up rather than on pooled PF, is the most this data supports.
+    # Current live values are rr=2.0, sl=1.5 ATR -- the first row is the
+    # baseline everything else must beat.
+    PARAM_GRID = [
+        (2.0, 1.5),   # as shipped
+        (3.0, 1.5),   # further target, same stop
+        (2.0, 2.5),   # same target, wider stop
+        (3.0, 2.5),   # both
+    ]
+
     costs = CostModel(spread_points=1.2, slippage_points=0.5, commission_per_lot=7.0)
 
     # M15's verdict is already in (0/16 folds, PF 0.58), and re-running it
@@ -235,14 +282,15 @@ def main() -> None:
                 continue
             print("########## %s (%d bars, train=%d test=%d) ##########" % (tf_name, len(bars), train, test))
             for label, strategies, regime in configs:
-                ind, strat = engines(strategies)
+              for rr, slm in PARAM_GRID:
+                ind, strat = engines_with(strategies[0], rr=rr, atr_sl_mult=slm)
                 res = walk_forward(
                     bars, symbol, tf,
                     train_bars=train, test_bars=test, warmup=min(WARMUP, train // 4),
                     cost_model=costs, indicator_engine=ind, strategy_engine=strat,
                     regime=regime,
                 )
-                row = report("%s / %s [%s]" % (tf_name, label, regime), res)
+                row = report("%s / %s [rr=%.1f sl=%.1fATR]" % (tf_name, label, rr, slm), res)
                 # Cost share is the number that explains M15: 88% of the loss
                 # there was friction, so track it per timeframe.
                 m = res.metrics

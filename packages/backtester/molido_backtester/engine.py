@@ -44,6 +44,7 @@ class BacktestEngine:
         risk_per_trade: float = 0.005,
         cost_model: CostModel | None = None,
         max_open: int = 1,
+        min_risk_reward: float = 0.0,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -51,6 +52,7 @@ class BacktestEngine:
         self.risk_per_trade = risk_per_trade
         self.costs = cost_model or CostModel()
         self.max_open = max_open
+        self.min_risk_reward = min_risk_reward
 
     def run(
         self,
@@ -149,6 +151,21 @@ class BacktestEngine:
 
             if not actionable:
                 continue
+
+            # The live RiskEngine refuses anything under min_risk_reward, and
+            # the backtester did not, so every walk-forward number so far was
+            # measured on a wider set of trades than the bot actually takes.
+            # 0.0 keeps the old behaviour.
+            if self.min_risk_reward > 0:
+                def _rr(x):
+                    if x.stop_loss is None or x.take_profit is None or x.entry is None:
+                        return None
+                    risk = abs(x.entry - x.stop_loss)
+                    return abs(x.take_profit - x.entry) / risk if risk else None
+                actionable = [x for x in actionable
+                              if (_rr(x) or 0) >= self.min_risk_reward]
+                if not actionable:
+                    continue
 
             sig = max(actionable, key=lambda s: s.confidence)
             entry_mid = mid

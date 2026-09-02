@@ -104,8 +104,24 @@ else
 fi
 
 head_ "Engine errors (last 500 log lines)"
-e=$(docker logs --tail 500 molido-engine 2>&1 | grep -ciE 'traceback|exception' || true)
-[ "${e:-0}" -eq 0 ] && ok "no tracebacks" || bad "$e traceback/exception lines"
+# Only recent errors. Counting over the whole log meant a startup race that
+# self-healed in five seconds kept the check red for hours afterwards, which
+# trains you to ignore it -- the same false-alarm failure as the first version
+# of the freshness test. What matters is whether it is broken now.
+recent=$(docker logs --since 15m molido-engine 2>&1 | grep -ciE 'traceback|exception' || true)
+older=$(docker logs --since 6h molido-engine 2>&1 | grep -ciE 'traceback|exception' || true)
+alive=$(docker logs --since 3m molido-engine 2>&1 | grep -c 'equity=' || true)
+if [ "${recent:-0}" -eq 0 ]; then
+  if [ "${older:-0}" -gt 0 ]; then
+    ok "no errors in the last 15m ($older earlier, already recovered)"
+  else
+    ok "no tracebacks"
+  fi
+elif [ "${alive:-0}" -gt 0 ]; then
+  warn "$recent recent error(s) but the engine is cycling normally"
+else
+  bad "$recent error(s) in the last 15m and no cycle logged in 3m"
+fi
 
 head_ "Web"
 code=$(curl -s -o /dev/null -m 20 -w '%{http_code}' https://mtrade.molido.shop/login 2>/dev/null)
