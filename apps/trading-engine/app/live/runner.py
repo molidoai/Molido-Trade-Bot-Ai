@@ -418,9 +418,29 @@ class LiveRunner:
         rt = _load_runtime()
         self._apply_runtime(rt)
         self.news.load_from_disk()
-        self.master_bot_on, flatten_seq, self._ops_poll_fail_count = _poll_ops(
+        # OFF from either authority wins. _apply_runtime has just set
+        # master_bot_on from the settings file; _poll_ops then used to
+        # overwrite it outright with the ops API's value, and ops.py caches
+        # that in memory at import. So setting master_bot_enabled=False in the
+        # settings file did nothing at all while the API stayed up holding a
+        # stale True: measured on 2026-09-02, the file said False from 22:18
+        # and the engine ran master=ON for seven more hours and took four
+        # trades. The stop only took effect when a reboot restarted the API.
+        #
+        # A kill switch that a stale cache can veto is not a kill switch.
+        # Either source may stop trading; neither may start it against the
+        # other, which is the safe asymmetry.
+        file_master = self.master_bot_on
+        ops_master, flatten_seq, self._ops_poll_fail_count = _poll_ops(
             self.master_bot_on, self._ops_poll_fail_count
         )
+        self.master_bot_on = bool(file_master and ops_master)
+        if file_master != ops_master:
+            logger.warning(
+                "[%s] master disagreement: settings=%s ops=%s -> trading %s",
+                self.log_tag, file_master, ops_master,
+                "ON" if self.master_bot_on else "OFF",
+            )
         if flatten_seq > self._flatten_seen and self.trade_manager is not None:
             self._flatten_seen = flatten_seq
             acts = await self.trade_manager.flatten_all("ops flatten")
