@@ -230,10 +230,15 @@ def main() -> None:
     # Judge each strategy in a regime it is actually allowed to trade in.
     # Live computes the regime per bar; testing a mean-reversion strategy
     # under a trend regime it explicitly excludes measures nothing.
+    # "auto" classifies every bar with the real regime engine, so the regime
+    # gate each strategy declares in allowed_regimes is actually exercised --
+    # which is what happens live. Asserting one regime for a whole run
+    # measured the strategies with that filter switched off.
     REGIME_FOR = {
-        "TrendFollowing": "Bull",
-        "DonchianBreakout": "Bull",
-        "RSIMeanReversion": "Sideways",
+        "TrendFollowing": "auto",
+        "TrendPullback": "auto",
+        "DonchianBreakout": "auto",
+        "RSIMeanReversion": "auto",
     }
     configs = [(name.strip(), [name.strip()], REGIME_FOR.get(name.strip(), "Bull"))
                for name in (os.getenv("WF_STRATEGIES") or default_cfg).split(",") if name.strip()]

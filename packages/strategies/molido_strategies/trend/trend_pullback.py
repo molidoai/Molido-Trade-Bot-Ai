@@ -85,15 +85,23 @@ class TrendPullback(Strategy):
         )
 
     def _emas(self, candles, period: int) -> list[float]:
-        """EMA series, computed here so the cross can be located in time.
+        """EMA over a bounded tail, so the cross can be located in time.
 
-        The indicator engine hands back only the latest value, and knowing
-        *when* the cross happened is the whole point of this strategy.
+        The indicator engine returns only the latest value and this strategy
+        needs to know *when* the cross happened, so the series is computed
+        here. Only the tail is walked: the backtester feeds a growing window,
+        and recomputing from bar zero each time made this quadratic -- an A/B
+        run that should take minutes was still on its first configuration
+        after twelve. An EMA converges geometrically, so seeding a few
+        multiples of the period back is indistinguishable from seeding at the
+        start, at constant cost per call.
         """
         k = 2.0 / (period + 1.0)
+        span = max(period * 6, self.fresh_bars + period + 20)
+        tail = candles[-span:] if len(candles) > span else candles
         out: list[float] = []
-        ema = candles[0].close
-        for c in candles:
+        ema = tail[0].close
+        for c in tail:
             ema = c.close * k + ema * (1 - k)
             out.append(ema)
         return out

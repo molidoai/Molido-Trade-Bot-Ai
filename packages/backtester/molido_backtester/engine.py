@@ -53,6 +53,7 @@ class BacktestEngine:
         self.costs = cost_model or CostModel()
         self.max_open = max_open
         self.min_risk_reward = min_risk_reward
+        self._regime_engine = None
 
     def run(
         self,
@@ -139,12 +140,24 @@ class BacktestEngine:
 
             # Indicators on window only
             ind_latest = self.indicators.compute_latest(window)
+            # regime="auto" classifies each bar instead of asserting one for
+            # the whole run. Passing a fixed string bypassed the regime engine
+            # entirely, so a regime filter could never be evaluated here -- the
+            # backtest was measuring the strategies with that gate removed,
+            # which is not what runs live.
+            bar_regime = regime
+            if regime == "auto":
+                if self._regime_engine is None:
+                    from molido_regime import MarketRegimeEngine
+                    self._regime_engine = MarketRegimeEngine()
+                bar_regime = self._regime_engine.classify(window, ind_latest)
+
             signals = self.strategies.evaluate_all(
                 symbol=symbol,
                 timeframe=timeframe,
                 candles=window,
                 indicators=ind_latest,
-                regime=regime,
+                regime=bar_regime,
                 account_mode="DEMO",
             )
             actionable = [s for s in signals if s.side in (SignalSide.BUY, SignalSide.SELL) and s.stop_loss]
