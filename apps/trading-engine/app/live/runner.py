@@ -629,6 +629,11 @@ class LiveRunner:
                 r_multiple=r,
                 exit_reason=exit_reason,
                 strategy=getattr(pos, "strategy", None),
+                # The price it actually left at, from the closing deal. An
+                # exit without a price is the same gap the entry had: the
+                # trade cannot be reconciled against the broker afterwards.
+                exit_price=(float(getattr(deals[-1], "price", 0) or 0) or None) if deals else None,
+                entry_price=float(getattr(pos, "entry_price", 0) or 0) or None,
             )
             if r is None:
                 logger.info("[%s] CLOSED %s %s (result unknown)", self.log_tag, symbol, ticket)

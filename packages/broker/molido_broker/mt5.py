@@ -399,10 +399,29 @@ class MT5BrokerAdapter(BrokerAdapter):
             request.get("comment"),
         )
         ok = result.retcode == self._mt5.TRADE_RETCODE_DONE
+
+        # MT5 puts the executed price on the *deal*, not on the order result:
+        # for a market order result.price is routinely 0, so
+        # `float(result.price or 0) or None` handed back None and every fill in
+        # the journal was recorded with no entry price at all -- 24 of 24.
+        # Without it a trade cannot be reconciled against the broker, slippage
+        # cannot be measured, and the record is not an audit trail. Fall back
+        # to the deal, which is where the number actually lives.
+        fill = float(result.price or 0) or None
+        if ok and fill is None and getattr(result, "deal", 0):
+            try:
+                deals = self._mt5.history_deals_get(ticket=int(result.deal))
+                if deals:
+                    fill = float(getattr(deals[0], "price", 0) or 0) or None
+            except Exception:
+                logger.debug("could not read fill price from deal %s", result.deal, exc_info=True)
+        if ok and fill is None:
+            logger.warning("filled but no price available for deal=%s order=%s", result.deal, result.order)
+
         return OrderResult(
             success=ok,
             broker_order_id=str(result.order or result.deal or ""),
-            fill_price=float(result.price or 0) or None,
+            fill_price=fill,
             filled_volume=float(result.volume or 0),
             message=f"retcode={result.retcode} comment={comment}",
             raw={"retcode": result.retcode, "deal": result.deal, "order": result.order, "comment": comment},

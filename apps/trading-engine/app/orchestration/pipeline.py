@@ -488,8 +488,15 @@ class TradingPipeline:
                 # risk this trade was opened with, a realised profit is just a
                 # dollar figure and cannot be compared across symbols or sizes.
                 stop_loss=order_sl,
+                take_profit=order_tp,
                 risk_amount=round(risk_result.risk_amount * min(1.0, size_mult), 2),
                 strategy=final.strategy,
+                # Why this trade was taken. Without it a losing record can be
+                # counted but not diagnosed -- you can see that a strategy lost
+                # without ever seeing what it thought it saw.
+                reasons="; ".join((final.reasons or [])[:4]) or None,
+                score=final.score,
+                regime=regime,
             )
         else:
             self._journal(

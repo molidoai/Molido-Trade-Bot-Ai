@@ -14,12 +14,15 @@ from molido_indicators.base import IndicatorResult
 from molido_strategies.base import Strategy, StrategyContext, StrategySignal, SignalSide
 
 from molido_strategies.trend.trend_following import TrendFollowingStrategy
+from molido_strategies.trend.trend_pullback import TrendPullback
 from molido_strategies.breakout.donchian_breakout import DonchianBreakoutStrategy
 from molido_strategies.mean_reversion.rsi_reversion import RSIMeanReversionStrategy
 
 
 STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "TrendFollowing": TrendFollowingStrategy,
+    # Candidate replacement; registered so it can be measured, not enabled.
+    "TrendPullback": TrendPullback,
     "DonchianBreakout": DonchianBreakoutStrategy,
     "RSIMeanReversion": RSIMeanReversionStrategy,
 }
