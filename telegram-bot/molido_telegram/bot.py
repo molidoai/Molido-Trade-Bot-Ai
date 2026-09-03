@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 
 from molido_telegram.client import TelegramClient
 from molido_telegram.auth import TelegramAuth
@@ -178,8 +179,53 @@ def _setting(rt: dict, key: str, env: str) -> str:
     return (os.getenv(env) or "").strip()
 
 
+class _RedactToken(logging.Filter):
+    """Strip bot tokens out of any log record before it is emitted.
+
+    The token sits in the path of every Telegram API URL, so anything that
+    logs a request URL publishes the credential. httpx does exactly that at
+    INFO, which put the full token in `docker compose logs` on every poll --
+    roughly twice a minute, forever, readable by anyone with log access. The
+    engine's own alert module is careful never to log the token; this path
+    undid that.
+
+    A filter rather than a formatter, because the leak is not tied to one
+    logger: it catches the message wherever it originates, including a library
+    added later that has never heard of this rule. Matching on the token's
+    shape (digits, colon, 35 URL-safe chars) rather than on the configured
+    value means it also redacts a token from another account, or one that was
+    rotated after the process started.
+    """
+
+    # No \b before the digits: the token appears in the URL as ".../bot<id>:...",
+    # where "bot" and the first digit are both word characters, so a word
+    # boundary never matches there and the whole filter silently does nothing.
+    # That is how the first version of this passed review and leaked anyway.
+    _PATTERN = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if record.args:
+                record.msg = record.getMessage()
+                record.args = ()
+            if isinstance(record.msg, str) and ":" in record.msg:
+                record.msg = self._PATTERN.sub("bot<redacted>", record.msg)
+        except Exception:
+            # Never let redaction break logging; a dropped message is a worse
+            # outcome than this filter failing to fire once.
+            pass
+        return True
+
+
 async def main():
     logging.basicConfig(level=logging.INFO)
+    # httpx logs the full request URL at INFO, and for Telegram that URL
+    # contains the token. Quiet it to WARNING and redact whatever still gets
+    # through, on the root handler so every logger is covered.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    for _h in logging.getLogger().handlers:
+        _h.addFilter(_RedactToken())
     # Re-read on every attempt so entering the token in the dashboard starts
     # the bot without a container restart.
     while True:

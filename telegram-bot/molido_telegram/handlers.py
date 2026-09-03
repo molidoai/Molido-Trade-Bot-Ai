@@ -115,19 +115,44 @@ class CommandRouter:
             f"مستر: <b>{'روشن' if self.state.master_bot_on else 'خاموش'}</b>"
         )
 
-    async def _status(self, chat_id: str, args: list[str], user: str) -> str:
-        if self.state.get_status:
-            try:
-                data = await self.state.get_status()
-                self.state.equity = data.get("equity", self.state.equity)
-                self.state.balance = data.get("balance", self.state.balance)
-                self.state.open_positions = data.get("open_positions", self.state.open_positions)
-                self.state.master_bot_on = data.get("master_bot_on", self.state.master_bot_on)
-                self.state.account_mode = data.get("account_mode", self.state.account_mode)
-                self.state.circuit_open = data.get("circuit_open", self.state.circuit_open)
-            except Exception as e:
-                return f"خطا در دریافت وضعیت: {e}"
+    # The typed commands answer from the same live snapshot the buttons use.
+    #
+    # They used to read BotState, which is populated only if the engine wires
+    # `get_status` -- and it never does, because the bot runs in its own
+    # container with no link to the engine. So /status reported equity 0.00 and
+    # /positions said "no open positions" while the account held two. The
+    # buttons were fixed to read the engine's snapshot off the shared volume
+    # and the typed commands were left behind, which is worse than either
+    # being broken alone: the same question got two different answers depending
+    # on how it was asked, and the wrong one looked authoritative.
+    #
+    # menu.render() also stamps the snapshot's age, so a stale file says so
+    # instead of quietly presenting old numbers as current.
+    @staticmethod
+    def _live(view: str) -> str | None:
+        """The rendered live view, or None when there is no snapshot to show.
 
+        The None case matters: menu.render() answers with its own "no snapshot
+        yet" text rather than failing, so returning that unconditionally made
+        the BotState fallback below unreachable dead code -- and a caller that
+        *had* populated BotState (the engine wiring get_status, or a test) got
+        "no data" instead of the state it supplied. Check for an actual
+        snapshot first and let the caller decide.
+        """
+        try:
+            from molido_telegram import live_data as ld
+            from molido_telegram import menu
+            if not ld.all_portfolios():
+                return None
+            text, _kb = menu.render(view)
+            return text
+        except Exception:
+            return None
+
+    async def _status(self, chat_id: str, args: list[str], user: str) -> str:
+        live = self._live("status")
+        if live:
+            return live
         circuit = "قطع شده ⛔" if self.state.circuit_open else "سالم ✅"
         master = "روشن" if self.state.master_bot_on else "خاموش"
         return (
@@ -138,25 +163,35 @@ class CommandRouter:
             f"اکوئیتی: <code>{self.state.equity:,.2f}</code>\n"
             f"موجودی: <code>{self.state.balance:,.2f}</code>\n"
             f"پوزیشن باز: <code>{self.state.open_positions}</code>\n"
-            f"سود/زیان امروز: <code>{self.state.daily_pnl:,.2f}</code>"
+            "⚠️ عکس زنده در دسترس نیست؛ اعداد بالا ممکن است کهنه باشند."
         )
 
     async def _balance(self, chat_id: str, args: list[str], user: str) -> str:
+        live = self._live("balance")
+        if live:
+            return live
         return (
             f"<b>موجودی</b>\n"
             f"موجودی: <code>{self.state.balance:,.2f}</code>\n"
             f"اکوئیتی: <code>{self.state.equity:,.2f}</code>\n"
-            f"حالت حساب: {self.state.account_mode}"
+            f"حالت حساب: {self.state.account_mode}\n"
+            "⚠️ عکس زنده در دسترس نیست."
         )
 
     async def _pnl(self, chat_id: str, args: list[str], user: str) -> str:
+        live = self._live("balance")
+        if live:
+            return live
         sign = "+" if self.state.daily_pnl >= 0 else ""
         return f"<b>سود/زیان امروز</b>\n<code>{sign}{self.state.daily_pnl:,.2f}</code>"
 
     async def _positions(self, chat_id: str, args: list[str], user: str) -> str:
+        live = self._live("positions")
+        if live:
+            return live
         if self.state.open_positions == 0:
             return "هیچ پوزیشن بازی وجود ندارد."
-        return f"پوزیشن‌های باز: <b>{self.state.open_positions}</b>\n(جزئیات در داشبورد)"
+        return f"پوزیشن‌های باز: <b>{self.state.open_positions}</b>\n⚠️ عکس زنده در دسترس نیست."
 
     async def _risk(self, chat_id: str, args: list[str], user: str) -> str:
         return (
