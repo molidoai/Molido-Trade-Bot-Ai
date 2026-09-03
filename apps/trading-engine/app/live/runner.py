@@ -895,6 +895,16 @@ class LiveRunner:
                 h1_map[symbol] = None
         rows: list[CheapCandidate] = []
         for idx, symbol in enumerate(self.symbols):
+            # A symbol no enabled strategy may trade must not compete for a
+            # candidate slot. The picker keeps only its top few by score and
+            # knows nothing about the symbol map, so closed symbols were
+            # crowding out open ones: with USDCAD, USDCHF and USDJPY shut, the
+            # three slots still went to them, and XAUUSD -- the best validated
+            # edge on the account -- was not evaluated once in 45 minutes.
+            # Filtering here rather than inside UniversePicker keeps the picker
+            # a pure ranker and puts the policy next to the settings it reads.
+            if self.strategies is not None and not self.strategies.allowed_for(symbol):
+                continue
             tick = ticks.get(symbol)
             spread = tick.spread if tick is not None else None
             mid = tick.mid if tick is not None else None
