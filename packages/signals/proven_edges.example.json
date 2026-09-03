@@ -1,0 +1,125 @@
+{
+  "_README": [
+    "Which edges are allowed to be called STRONG, and -- when the proven-edge",
+    "gate is on -- which are allowed to trade at all.",
+    "",
+    "This ships EMPTY, and that is a measurement, not an oversight. A full",
+    "walk-forward pass over every strategy in this repository on 2026-09-02",
+    "validated nothing. The numbers are recorded in _refuted below so that the",
+    "next person to ask 'has anyone checked ADX?' can read the answer instead",
+    "of re-running the search.",
+    "",
+    "An entry here is a claim with a scope. ProvenEdge.is_valid() re-derives",
+    "the verdict from the evidence fields every time the file is loaded, so",
+    "adding an edge_id without the supporting numbers does not unblock",
+    "anything -- the bars are min 30 out-of-sample trades, PF above 1.0,",
+    "positive cost-adjusted expectancy, and more than half the walk-forward",
+    "folds profitable. Those were fixed before the first result was seen.",
+    "",
+    "symbols and timeframes are part of the claim. An edge validated on",
+    "EURUSD H1 is blocked on XAUUSD M15, because that distinction is exactly",
+    "what separated the one combination that looked profitable from the",
+    "measurement that refuted it."
+  ],
+  "edges": [
+    {
+      "edge_id": "TrendFollowing",
+      "version": "1",
+      "symbols": [
+        "XAUUSD"
+      ],
+      "timeframes": [
+        "H1"
+      ],
+      "oos_trades": 78,
+      "oos_profit_factor": 1.43,
+      "oos_folds_total": 16,
+      "oos_folds_profitable": 9,
+      "cost_adjusted_expectancy": 8.13,
+      "good_regimes": [
+        "Bull",
+        "Bear",
+        "Strong Bull",
+        "Strong Bear"
+      ],
+      "validated_at": "2026-09-03",
+      "_evidence": "walk-forward 16 folds, H1, rr=3.0, sl=1.5 ATR, current cost model. net +634.2 on 78 OOS trades, pre-cost +663.5, cost/trade 0.38. The modelled gold spread of 0.25 was checked against the broker's live spread of 0.29, so this is not a cost-model artefact.",
+      "_scope_warning": "XAUUSD only. The same strategy is below 1.0 on all six FX pairs measured the same day (0.73-0.96), so this is a claim about gold, not about the strategy."
+    },
+    {
+      "edge_id": "RSIMeanReversion",
+      "version": "1",
+      "symbols": [
+        "EURUSD"
+      ],
+      "timeframes": [
+        "H1"
+      ],
+      "oos_trades": 41,
+      "oos_profit_factor": 1.12,
+      "oos_folds_total": 16,
+      "oos_folds_profitable": 9,
+      "cost_adjusted_expectancy": 2.08,
+      "good_regimes": [
+        "Sideways",
+        "Low Volatility"
+      ],
+      "validated_at": "2026-09-03",
+      "_evidence": "walk-forward 16 folds, H1, rr=3.0, sl=1.5 ATR, current cost model. net +85.4 on 41 OOS trades, pre-cost +236.7, cost/trade 3.69. The modelled EURUSD spread is wider than the broker currently quotes, so this figure is conservative.",
+      "_scope_warning": "EURUSD only. Same strategy elsewhere: USDJPY 1.25 but 6/16 folds, AUDUSD 0.77, GBPUSD 0.72, XAUUSD 0.59, USDCHF 0.56, USDCAD 0.51."
+    }
+  ],
+  "_refuted": {
+    "_note": "Measured 2026-09-03 across 7 symbols, H1, walk-forward 16 folds, rr=3.0, current cost model, unless stated otherwise.",
+    "TrendFollowing": {
+      "oos_trades": 608,
+      "why": "below 1.0 on every FX pair measured: EURUSD 0.96, USDJPY 0.86, USDCHF 0.83, USDCAD 0.77, GBPUSD 0.76, AUDUSD 0.73. Validated on XAUUSD only -- see edges."
+    },
+    "TrendPullback": {
+      "oos_trades": 88,
+      "profit_factor": 0.65,
+      "folds": "7/16",
+      "why": "built to fix TrendFollowing's state-vs-event entry; measured worse than the thing it replaced"
+    },
+    "EnsembleADXTrend": {
+      "oos_trades": 0,
+      "why": "NOT MEASURED, not refuted. Zero trades on all 7 symbols because the harness did not register ADX, so the strategy read None on every bar. The harness was fixed after this run had started, so it still needs measuring."
+    },
+    "DonchianBreakout": {
+      "oos_trades": 520,
+      "profit_factor": 1.15,
+      "folds": "8/16",
+      "why": "the best refused row of the sweep. GBPUSD 1.15 and XAUUSD 1.08 both failed the fold test at exactly 8/16; every other symbol between 0.70 and 0.97."
+    },
+    "RSIMeanReversion": {
+      "oos_trades": 314,
+      "why": "validated on EURUSD only. USDJPY reached PF 1.25 on 39 trades but only 6/16 folds; AUDUSD 0.77, GBPUSD 0.72, XAUUSD 0.59, USDCHF 0.56, USDCAD 0.51."
+    },
+    "StrengthReversion": {
+      "oos_trades": 802,
+      "why": "no symbol above 1.0: XAUUSD 0.92, USDCHF 0.88, GBPUSD 0.84, USDJPY 0.79, AUDUSD 0.78, USDCAD 0.74, EURUSD 0.69."
+    }
+  },
+  "_example_entry_do_not_uncomment": {
+    "edge_id": "SomeStrategy",
+    "version": "1",
+    "symbols": [
+      "EURUSD",
+      "GBPUSD"
+    ],
+    "timeframes": [
+      "H1"
+    ],
+    "oos_trades": 240,
+    "oos_profit_factor": 1.18,
+    "oos_folds_total": 16,
+    "oos_folds_profitable": 11,
+    "cost_adjusted_expectancy": 0.14,
+    "good_regimes": [
+      "Bull",
+      "Bear"
+    ],
+    "validated_at": "2026-09-02T00:00:00+00:00"
+  },
+  "_selection_caveat": "Both entries come from a single sweep of 7 symbols x 5 strategies on 2026-09-03. 28 cells carried trades and 2 cleared the bar. With 28 simultaneous hypotheses that yield is not distinguishable from chance, so these are hypotheses carried forward on a demo account, not established edges. The bar was fixed before any result was seen and was not moved afterwards: GBPUSD/DonchianBreakout at PF 1.15 was refused on exactly 8/16 folds, because half is not more than half."
+}

@@ -120,16 +120,29 @@ def engines_with(strategy: str, **params) -> tuple[IndicatorEngine, StrategyEngi
     result worse. The parameters themselves are the only real lever.
     """
     ind = IndicatorEngine()
+    # The full registry the live engine can compute, not a subset. This list
+    # was short by ADX and EnsembleADXTrend consumes ADX, so it read None on
+    # every bar and returned no trade -- 0 trades in 16 folds, printed as
+    # "no edge" for a strategy that was never given its inputs. That is the
+    # identical failure this file already documents for DonchianBreakout and
+    # DonchianChannel, repeated because the fix was to add one name rather
+    # than to stop maintaining a hand-copied list.
     for name, kw in (
         ("MultiEMA", {}), ("RSI", {"period": 14}), ("ATR", {"period": 14}),
         ("MACD", {}), ("BollingerBands", {"period": 20}),
         ("DonchianChannel", {"period": 20}),
         ("Supertrend", {"period": 10, "multiplier": 3.0}),
+        ("ADX", {"period": 14}), ("EfficiencyRatio", {"period": 20}),
+        ("VolatilityRank", {}),
     ):
         try:
             ind.add_from_registry(name, **kw)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Loud, because a silently absent indicator does not fail: it
+            # produces a plausible-looking zero-trade result that reads as
+            # evidence against the strategy.
+            print("  WARNING: indicator %s unavailable (%s); any strategy "
+                  "needing it will report zero trades" % (name, exc))
     strat = StrategyEngine()
     try:
         strat.add_from_registry(strategy, **params)
@@ -285,6 +298,17 @@ def main() -> None:
     wanted = [x.strip().upper() for x in (os.getenv("WF_TF") or "").split(",") if x.strip()]
     frames = [t for t in TIMEFRAMES if not wanted or t[0].upper() in wanted]
 
+    # The same for the grids: a seven-symbol, five-strategy comparison does
+    # not need the shipped rr=2.0 baseline or the two hypothetical cost rows
+    # re-measured every time. WF_RR="3.0" and WF_COSTS="raw/ECN,current model"
+    # narrow the run to the cells still in question.
+    rr_wanted = [float(x) for x in (os.getenv("WF_RR") or "").split(",") if x.strip()]
+    if rr_wanted:
+        PARAM_GRID = [p for p in PARAM_GRID if p[0] in rr_wanted]
+    cost_wanted = [x.strip() for x in (os.getenv("WF_COSTS") or "").split(",") if x.strip()]
+    if cost_wanted:
+        COST_GRID = [c for c in COST_GRID if c[0] in cost_wanted]
+
     for symbol in symbols:
         symbol = symbol.strip()
         path = os.path.join(DATA_DIR, f"{symbol}_M15.csv")
@@ -312,7 +336,13 @@ def main() -> None:
                     cost_model=costs, indicator_engine=ind, strategy_engine=strat,
                     regime=regime,
                 )
-                row = report("%s rr=%.1f sl=%.1f | %s" % (tf_name, rr, slm, cost_name), res)
+                # `label` names the strategy under test. Leaving it out of the
+                # printed header made two strategies produce sixteen blocks
+                # per symbol that could only be told apart by counting lines,
+                # which is exactly how a result gets attributed to the wrong
+                # strategy.
+                row = report("%s | %s rr=%.1f sl=%.1f | %s"
+                             % (label, tf_name, rr, slm, cost_name), res)
                 # Cost share is the number that explains M15: 88% of the loss
                 # there was friction, so track it per timeframe.
                 m = res.metrics
@@ -321,8 +351,16 @@ def main() -> None:
                 rows.append(row)
 
         print("=== %s VERDICT ===" % symbol)
-        for r in sorted(rows, key=lambda x: -x["pf"]):
-            verdict = "EDGE" if r["pf"] > 1.0 and r["profitable"] > r["folds"] / 2 else "no edge"
+        # A zero-trade row sorts to the top on PF=inf and reads as the best
+        # result on the page when it is in fact the absence of one. Sort it
+        # to the bottom and label it for what it is.
+        for r in sorted(rows, key=lambda x: (x["n"] == 0, -x["pf"])):
+            if r["n"] == 0:
+                verdict = "NOT MEASURED (no trades -- check its indicators)"
+            elif r["pf"] > 1.0 and r["profitable"] > r["folds"] / 2:
+                verdict = "EDGE"
+            else:
+                verdict = "no edge"
             gross = r["net"] + r.get("cost", 0.0)
             print("  %-34s PF=%5.2f  n=%5d  net=%+9.1f  pre-cost=%+9.1f  cost/trade=%5.2f  %d/%d folds  -> %s" % (
                 r["label"], r["pf"], r["n"], r["net"], gross,
