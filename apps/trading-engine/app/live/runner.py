@@ -26,7 +26,7 @@ from molido_portfolio import PositionManager, PortfolioManager, Reconciler
 from molido_portfolio.trade_manager import TradeManager
 from molido_regime import MarketRegimeEngine
 from molido_guards import SessionCalendar, NewsBlackoutGuard, TradingHoursGuard, default_calendar_path
-from molido_strategies.engine import parse_strategy_names
+from molido_strategies.engine import parse_strategy_names, parse_symbol_strategies
 from molido_brain.experience import Experience
 from molido_brain.autopilot import plan as autopilot_plan, independent_groups
 from molido_brain import (
@@ -79,6 +79,97 @@ def _pick(rt: dict, *keys: str, env: str | None = None) -> str:
 def _env_bool(name: str, default: bool = True) -> bool:
     raw = os.getenv(name, "true" if default else "false").strip().lower()
     return raw in ("1", "true", "yes", "on")
+
+
+# What the engine has always computed. Kept as the default so nothing changes
+# for an account that says nothing about indicators.
+DEFAULT_INDICATORS: list[tuple[str, dict]] = [
+    ("MultiEMA", {}),
+    ("RSI", {"period": 14}),
+    ("ATR", {"period": 14}),
+    ("MACD", {}),
+    ("BollingerBands", {"period": 20}),
+    ("DonchianChannel", {"period": 20}),
+    ("Supertrend", {"period": 10, "multiplier": 3.0}),
+]
+
+
+def _build_indicators(rt: dict) -> IndicatorEngine:
+    """Build the indicator set, letting settings override the default list.
+
+    Strategies were already selectable per account; indicators were not, so
+    the one thing a strategy depends on could only be changed by editing this
+    file and rebuilding the image. That is how ADX came to be missing: a
+    strategy could ask for it, the registry could provide it, and the live
+    engine would still never compute it.
+
+    Settings may carry either plain names or {"name": ..., "params": {...}}:
+
+        "indicators": ["MultiEMA", {"name": "ADX", "params": {"period": 14}}]
+
+    A name the registry does not know is skipped with a warning rather than
+    killing the engine at startup -- a typo in a settings file should not take
+    trading down -- but it is never swallowed silently, because a filter that
+    quietly does not exist is worse than one that fails loudly. That exact
+    swallowing is what let the walk-forward harness run for weeks reporting
+    results "with ADX" that had no ADX in them.
+    """
+    engine = IndicatorEngine()
+    raw = rt.get("indicators")
+    specs: list[tuple[str, dict]] = []
+    if isinstance(raw, list) and raw:
+        for item in raw:
+            if isinstance(item, str):
+                specs.append((item, {}))
+            elif isinstance(item, dict) and item.get("name"):
+                params = item.get("params")
+                specs.append((str(item["name"]), params if isinstance(params, dict) else {}))
+            else:
+                logger.warning("ignoring malformed indicator entry: %r", item)
+    if not specs:
+        specs = DEFAULT_INDICATORS
+    for name, params in specs:
+        try:
+            engine.add_from_registry(name, **params)
+        except Exception:
+            logger.warning("indicator %s could not be loaded; skipping", name, exc_info=True)
+    logger.info("indicators active: %s", ", ".join(n for n, _ in specs))
+    return engine
+
+
+def _deal_price(deals, entry_kind: int) -> float | None:
+    """Price of the opening (0) or closing (1) deal of a position.
+
+    MT5 returns every deal on a position, and picking by list position breaks
+    on partial closes and on any ordering the terminal chooses. The `entry`
+    field says which is which, so ask for that instead. Later deals win for
+    the closing side, so a partially closed trade reports the price it finally
+    left at.
+    """
+    found = None
+    for d in deals or ():
+        try:
+            if int(getattr(d, "entry", -1)) != entry_kind:
+                continue
+            price = float(getattr(d, "price", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if price:
+            found = price
+            if entry_kind == 0:
+                break
+    return found
+
+
+def _int_or_none(v) -> int | None:
+    """An absent setting and a set-to-zero setting mean different things."""
+    if v is None:
+        return None
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
 
 def _overlap_only(rt: dict) -> bool:
@@ -211,17 +302,13 @@ class LiveRunner:
         self.journal = TradeJournal(path=account.journal_path(DATA_DIR))
         self.brain = DecisionBrain()
 
-        self.indicators = IndicatorEngine()
-        self.indicators.add_from_registry("MultiEMA")
-        self.indicators.add_from_registry("RSI", period=14)
-        self.indicators.add_from_registry("ATR", period=14)
-        self.indicators.add_from_registry("MACD")
-        self.indicators.add_from_registry("BollingerBands", period=20)
-        self.indicators.add_from_registry("DonchianChannel", period=20)
-        self.indicators.add_from_registry("Supertrend", period=10, multiplier=3.0)
+        self.indicators = _build_indicators(acc_settings)
 
         self.strategies = StrategyEngine()
         self.strategies.configure_live(parse_strategy_names(account.strategy_names))
+
+        self._explicit_entry_cap = _int_or_none(acc_settings.get("max_entries_per_day"))
+        self._explicit_position_cap = _int_or_none(acc_settings.get("max_open_positions"))
 
         self.signals = SignalEngine(accept_threshold=55.0)
         self.risk = RiskEngine(self._limits_from(acc_settings))
@@ -252,16 +339,35 @@ class LiveRunner:
             logger.exception("[%s] autopilot failed; keeping configured limits", self.log_tag)
             return limits
 
+        # An explicitly configured throughput limit is the operator's call and
+        # autopilot may raise it but not lower it. It used to overwrite both
+        # unconditionally, so a dashboard set to 8 entries a day silently ran
+        # at 4 and the setting looked broken -- the same "persisted, threaded,
+        # then discarded by a default" shape found half a dozen times in this
+        # engine already.
+        #
+        # Letting the operator open the throttle is safe in a way that is
+        # worth being explicit about, because it looks reckless and is not:
+        # autopilot derives 4/day from the 2% daily budget at 0.5% risk, but
+        # that budget is *separately* enforced by the daily-loss stop. Raising
+        # the entry count does not raise the amount that can be lost in a day;
+        # it only means the day ends when the money runs out rather than when
+        # the counter does. What it does raise is the number of correlated
+        # bets open at once, which is why max_open_positions stays bounded by
+        # the number of independent groups unless deliberately set higher.
+        entry_cap = max(p.max_entries_per_day, self._explicit_entry_cap or 0)             if self._explicit_entry_cap else p.max_entries_per_day
+        pos_cap = max(p.max_open_positions, self._explicit_position_cap or 0)             if self._explicit_position_cap else p.max_open_positions
+
         changed = (
             round(limits.risk_per_trade, 5) != round(p.risk_per_trade, 5)
-            or limits.max_entries_per_day != p.max_entries_per_day
+            or limits.max_entries_per_day != entry_cap
             or limits.max_consecutive_losses != p.max_consecutive_losses
-            or limits.max_open_positions != p.max_open_positions
+            or limits.max_open_positions != pos_cap
         )
         limits.risk_per_trade = p.risk_per_trade
-        limits.max_entries_per_day = p.max_entries_per_day
+        limits.max_entries_per_day = entry_cap
         limits.max_consecutive_losses = p.max_consecutive_losses
-        limits.max_open_positions = p.max_open_positions
+        limits.max_open_positions = pos_cap
         if changed:
             logger.info("[%s] autopilot: %s", self.log_tag, " | ".join(p.reasons))
         return limits
@@ -332,6 +438,38 @@ class LiveRunner:
         # session config rather than letting it default to overlap-only.
         if self.pipeline is not None and TradingHoursGuard is not None:
             self.pipeline.hours_guard = TradingHoursGuard(overlap_only=overlap_only)
+        # Re-read the operator's caps too: changing them in the dashboard has
+        # to take effect without restarting the engine.
+        self._explicit_entry_cap = _int_or_none(settings.get("max_entries_per_day"))
+        self._explicit_position_cap = _int_or_none(settings.get("max_open_positions"))
+
+        # Strategy selection was read once, at construction. Changing it in
+        # the dashboard therefore did nothing until someone restarted the
+        # engine -- and nothing said so, which is the same shape as the
+        # entries-per-day cap and the indicator list: a setting that persists,
+        # reloads, and is then ignored by the thing it configures. Re-applying
+        # it here costs one comparison per cycle.
+        wanted = parse_strategy_names(settings.get("strategy_names")
+                                      or settings.get("strategies"))
+        # Compare as sets. enabled_names() returns registry order, the
+        # setting returns whatever order it was written in, and comparing the
+        # two as lists made every cycle look like a change -- reconfiguring
+        # the engine sixty times an hour and filling the log with a rename
+        # that never happened.
+        current = self.strategies.enabled_names()
+        if set(wanted) != set(current):
+            logger.info("[%s] strategy set changed: %s -> %s",
+                        self.log_tag, sorted(current), sorted(wanted))
+            self.strategies.configure_live(wanted)
+        # Which of the enabled strategies may trade which symbol. Optional;
+        # an absent or empty map keeps every symbol open to every enabled
+        # strategy. Re-read per cycle like the rest of the settings.
+        sym_map = parse_symbol_strategies(settings.get("symbol_strategies"))
+        if sym_map != self.strategies.symbol_map():
+            logger.info("[%s] symbol/strategy map: %s", self.log_tag,
+                        {k: sorted(v) for k, v in sorted(sym_map.items())} or "(none)")
+            self.strategies.configure_symbol_map(sym_map)
+
         self.risk.limits = self._autopilot(settings, self._limits_from(settings))
         # Keep the universe picker in step with the configured position cap,
         # and let it propose one extra candidate per cycle -- the brains and
@@ -340,6 +478,16 @@ class LiveRunner:
         self.picker.max_new = 3
         if self.pipeline is not None:
             self.pipeline.account_mode = self.account_mode
+            # The trade-power layer reads its gate settings from here. Without
+            # this line `require_proven_edge` was unreachable: the pipeline had
+            # no runtime_settings attribute at all, so the lookup fell through
+            # to its default on every cycle and the setting did nothing while
+            # appearing to be honoured. That is the same shape as the entry
+            # cap, the indicator list, the strategy selection and the master
+            # switch before them -- a value that persists, reloads, and is then
+            # ignored by the code it configures. Refreshed per cycle so a
+            # change takes effect without a restart.
+            self.pipeline.runtime_settings = settings
         if self.portfolio is not None:
             self.portfolio.account_mode = self.account_mode
         if self.market_data is not None:
@@ -413,6 +561,43 @@ class LiveRunner:
         self.master_bot_on = on
         logger.info("Master bot → %s", "ON" if on else "OFF")
 
+    async def _recover_broker(self, exc: BaseException | None = None) -> bool:
+        """Rebuild the MT5 bridge connection and the tick stream after a drop.
+
+        broker.connect() goes through _load_mt5, which pings the cached RPyC
+        connection and evicts it when the socket is dead, so calling it again
+        is the whole reconnect. The tick stream task ends itself on the same
+        error, and nothing restarted it either, so candles kept coming from
+        the cache while the "latest tick" quietly aged. Restart both, then
+        reconcile, because positions may have changed while we were blind.
+
+        Returns True when the bridge answers again. Failure is logged and
+        left for the next cycle; the bridge coming back is not ours to hurry.
+        """
+        logger.warning("[%s] broker connection lost (%s); reconnecting to %s:%s",
+                       self.log_tag, type(exc).__name__ if exc else "unknown",
+                       self.account.rpc_host, self.account.rpc_port)
+        try:
+            ok = await self.broker.connect()
+        except Exception:
+            logger.exception("[%s] broker reconnect raised", self.log_tag)
+            return False
+        if not ok:
+            logger.warning("[%s] broker reconnect failed; will retry next cycle", self.log_tag)
+            return False
+        if self.market_data is not None and not getattr(self.market_data, "_running", True):
+            try:
+                await self.market_data.start()
+            except Exception:
+                logger.exception("[%s] tick stream restart failed", self.log_tag)
+        try:
+            await self.reconciler.reconcile()
+        except Exception:
+            logger.exception("[%s] reconcile after reconnect failed", self.log_tag)
+        logger.info("[%s] broker reconnected", self.log_tag)
+        telegram_notify(f"🔌 اتصال MT5 دوباره برقرار شد ({self.log_tag})")
+        return True
+
     async def _cycle(self) -> None:
         _post_heartbeat()
         rt = _load_runtime()
@@ -467,8 +652,17 @@ class LiveRunner:
             before = {str(p.ticket): p for p in self.positions.get_all()}
             try:
                 await self.positions.sync_from_broker()
-            except Exception:
+            except Exception as exc:
                 logger.exception("[%s] position sync failed; skipping new entries this cycle", self.log_tag)
+                # The bridge socket dies whenever the MT5 terminal or the
+                # RPyC server restarts, and the engine used to stay dead with
+                # it: connect() ran once at startup, so every later cycle hit
+                # the same closed stream and logged this same line until
+                # someone restarted the container by hand. On 2026-09-03 that
+                # was twice in one afternoon, 5 and 1 minutes of no trading
+                # after the bridge was already back. Rebuild the connection
+                # here so the next cycle gets a live one.
+                await self._recover_broker(exc)
                 return
             after = {str(p.ticket) for p in self.positions.get_all()}
             gone = [t for t in before if t not in after]
@@ -632,8 +826,16 @@ class LiveRunner:
                 # The price it actually left at, from the closing deal. An
                 # exit without a price is the same gap the entry had: the
                 # trade cannot be reconciled against the broker afterwards.
-                exit_price=(float(getattr(deals[-1], "price", 0) or 0) or None) if deals else None,
-                entry_price=float(getattr(pos, "entry_price", 0) or 0) or None,
+                exit_price=_deal_price(deals, 1) or (
+                    (float(getattr(deals[-1], "price", 0) or 0) or None) if deals else None),
+                # Prefer the broker's opening deal over the cached position
+                # object. `before` is a snapshot taken before the position
+                # vanished, and whether it carries an entry price depends on
+                # how it was built -- when it does not, the record loses the
+                # one number that makes the exit meaningful. The deal history
+                # always has it.
+                entry_price=_deal_price(deals, 0) or (
+                    float(getattr(pos, "entry_price", 0) or 0) or None),
             )
             if r is None:
                 logger.info("[%s] CLOSED %s %s (result unknown)", self.log_tag, symbol, ticket)

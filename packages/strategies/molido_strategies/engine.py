@@ -15,6 +15,8 @@ from molido_strategies.base import Strategy, StrategyContext, StrategySignal, Si
 
 from molido_strategies.trend.trend_following import TrendFollowingStrategy
 from molido_strategies.trend.trend_pullback import TrendPullback
+from molido_strategies.trend.ensemble import EnsembleTrend, EnsembleADXTrend
+from molido_strategies.mean_reversion.strength_reversion import StrengthReversion
 from molido_strategies.breakout.donchian_breakout import DonchianBreakoutStrategy
 from molido_strategies.mean_reversion.rsi_reversion import RSIMeanReversionStrategy
 
@@ -23,6 +25,12 @@ STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "TrendFollowing": TrendFollowingStrategy,
     # Candidate replacement; registered so it can be measured, not enabled.
     "TrendPullback": TrendPullback,
+    # Filters are switchable so combinations can be measured, not argued.
+    "EnsembleTrend": EnsembleTrend,
+    # The ADX25 + 50/200 preset, selectable by name from settings.
+    "EnsembleADXTrend": EnsembleADXTrend,
+    # The only signal so far to beat its own shuffled control.
+    "StrengthReversion": StrengthReversion,
     "DonchianBreakout": DonchianBreakoutStrategy,
     "RSIMeanReversion": RSIMeanReversionStrategy,
 }
@@ -42,9 +50,53 @@ def parse_strategy_names(raw: Any) -> list[str]:
     return list(DEFAULT_LIVE_STRATEGIES)
 
 
+def parse_symbol_strategies(raw: Any) -> dict[str, set[str]]:
+    """{"XAUUSD": ["TrendFollowing"], "EURUSD": "RSIMeanReversion"} -> sets.
+
+    Symbols are upper-cased; a symbol with an empty list means "nothing may
+    trade here", which is a legitimate thing to say about an instrument every
+    strategy lost on. Anything malformed is ignored rather than raised: a bad
+    dashboard entry must not take the engine down.
+    """
+    out: dict[str, set[str]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for sym, names in raw.items():
+        key = str(sym).strip().upper()
+        if not key:
+            continue
+        if isinstance(names, str):
+            parts = [p.strip() for p in names.replace(";", ",").split(",") if p.strip()]
+        elif isinstance(names, (list, tuple)):
+            parts = [str(p).strip() for p in names if str(p).strip()]
+        else:
+            continue
+        out[key] = set(parts)
+    return out
+
+
 class StrategyEngine:
     def __init__(self):
         self._strategies: dict[str, Strategy] = {}
+        # Per-symbol restriction on top of the enabled set. The walk-forward
+        # of 2026-09-03 showed no strategy with an edge on every symbol but
+        # most symbols with one strategy that held up out of sample, so the
+        # unit of configuration has to be (symbol, strategy), not strategy.
+        # A symbol absent from the map runs every enabled strategy, so a
+        # deployment that never sets this behaves exactly as before.
+        self._symbol_allow: dict[str, set[str]] = {}
+
+    def configure_symbol_map(self, mapping: dict[str, set[str]] | None) -> None:
+        self._symbol_allow = {k: set(v) for k, v in (mapping or {}).items()}
+
+    def symbol_map(self) -> dict[str, set[str]]:
+        return {k: set(v) for k, v in self._symbol_allow.items()}
+
+    def allowed_for(self, symbol: str) -> list[str]:
+        """Enabled strategies that may trade `symbol`."""
+        allow = self._symbol_allow.get(str(symbol).upper())
+        return [n for n, s in self._strategies.items()
+                if s.enabled and (allow is None or n in allow)]
 
     def register(self, name: str, strategy: Strategy) -> None:
         self._strategies[name] = strategy
@@ -115,8 +167,11 @@ class StrategyEngine:
             open_position_side=open_position_side,
         )
         signals: list[StrategySignal] = []
+        allow = self._symbol_allow.get(str(symbol).upper())
         for name, strategy in self._strategies.items():
             if not strategy.enabled:
+                continue
+            if allow is not None and name not in allow:
                 continue
             try:
                 sig = strategy.evaluate(ctx)
