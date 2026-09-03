@@ -29,14 +29,75 @@ EOF
 )
 state=${state:-unknown}
 stamp=/run/molido-algo-watch.alerted
+STATE_DIR=/var/lib/molido-watchdog
+mkdir -p "$STATE_DIR"
+TRIES="$STATE_DIR/algo.count"
+MAX_TRIES=2
+
 case "$state" in
   on)
-    rm -f "$stamp"
+    rm -f "$stamp" "$TRIES"
     exit 0 ;;
-  off)
-    msg="⚠️ Molido: Algo Trading در ترمینال MT5 خاموش است. سفارش‌ها با 10027 رد می‌شوند. /opt/mt5/enable-algo.sh را اجرا کنید." ;;
   bridge-down)
-    msg="⚠️ Molido: پل MT5 (پورت 8001) جواب نمی‌دهد. systemctl start mt5.service mt5linux.service" ;;
+    # watchdog.sh owns repairing the bridge; only report it here.
+    msg="⚠️ Molido: پل MT5 (پورت 8001) جواب نمی‌دهد."
+    ;;
+  off)
+    # Try to fix it rather than only reporting it. This is the one failure of
+    # 2026-09-03 that needed a human at the GUI: the flag is not settable from
+    # any config file, so 114 orders were refused with retcode 10027 over
+    # 45 minutes while every internal log looked healthy.
+    #
+    # Capped at MAX_TRIES because the repair drives the terminal's UI with
+    # synthetic mouse clicks. If two attempts have not taken, a third is not
+    # more likely to work and each one clicks inside a live trading window --
+    # past that point the honest move is to stop and ask for a human.
+    n=0; [ -f "$TRIES" ] && n=$(cat "$TRIES" 2>/dev/null || echo 0)
+    if [ "$n" -lt "$MAX_TRIES" ] && [ -x /opt/mt5/enable-algo.sh ]; then
+      echo $((n + 1)) > "$TRIES"
+      logger -t molido-algo-watch "trade_allowed is off; attempt $((n+1))/$MAX_TRIES via enable-algo.sh"
+      timeout 180 /opt/mt5/enable-algo.sh >/tmp/algo-repair.log 2>&1 || true
+      # The script's own output is not evidence: it reports clicks, not state.
+      # Ask the terminal what it actually thinks now.
+      after=$(docker compose -f /opt/molido/docker-compose.yml exec -T trading-engine python3 - 2>/dev/null <<'EOF'
+import rpyc
+try:
+    c = rpyc.classic.connect("host.docker.internal", 8001)
+    c._config["sync_request_timeout"] = 15
+    c.execute("import MetaTrader5 as mt5")
+    ti = c.eval("mt5.terminal_info()")
+    print("unknown" if ti is None else ("on" if ti.trade_allowed else "off"))
+except Exception:
+    print("bridge-down")
+EOF
+)
+      if [ "${after:-off}" = "on" ]; then
+        logger -t molido-algo-watch "repaired: trade_allowed is on again"
+        rm -f "$stamp" "$TRIES"
+        python3 - "🔧 Molido: Algo Trading در ترمینال خاموش شده بود و خودکار روشن شد. معاملات از سر گرفته می‌شود." <<'SEND'
+import json, sys, urllib.parse, urllib.request
+p = "/var/lib/docker/volumes/molido_runtime_data/_data/runtime-settings.json"
+try:
+    d = json.load(open(p, encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+tok = (d.get("telegram_bot_token") or "").strip()
+chat = d.get("telegram_admin_chat_id")
+if not tok or not chat:
+    sys.exit(0)
+data = urllib.parse.urlencode({"chat_id": chat, "text": sys.argv[1]}).encode()
+try:
+    urllib.request.urlopen("https://api.telegram.org/bot%s/sendMessage" % tok, data=data, timeout=15)
+except Exception:
+    pass
+SEND
+        exit 0
+      fi
+      msg="⚠️ Molido: Algo Trading خاموش است و تلاش خودکار برای روشن کردنش ($((n+1)) از $MAX_TRIES) کار نکرد. سفارش‌ها با 10027 رد می‌شوند."
+    else
+      msg="⚠️ Molido: Algo Trading خاموش است و تعمیر خودکار به سقف تلاش رسید. باید دستی از رابط MT5 روشن شود."
+    fi
+    ;;
   *)
     exit 0 ;;
 esac
