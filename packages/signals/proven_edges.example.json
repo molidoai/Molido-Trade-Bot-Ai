@@ -70,10 +70,10 @@
     }
   ],
   "_refuted": {
-    "_note": "Measured 2026-09-03 across 7 symbols, H1, walk-forward 16 folds, rr=3.0, current cost model, unless stated otherwise.",
+    "_note": "Measured 2026-09-03/04 across 11 symbols on H1, walk-forward 16 folds, rr=3.0, current cost model. 53 cells carried trades; 2 cleared the bar.",
     "TrendFollowing": {
       "oos_trades": 608,
-      "why": "below 1.0 on every FX pair measured: EURUSD 0.96, USDJPY 0.86, USDCHF 0.83, USDCAD 0.77, GBPUSD 0.76, AUDUSD 0.73. Validated on XAUUSD only -- see edges."
+      "why": "below 1.0 on all nine FX pairs measured: USDJPY 0.86, USDCHF 0.83, EURJPY 0.78, USDCAD 0.77, GBPUSD 0.76, NZDUSD 0.72, AUDUSD 0.73, GBPJPY 0.67, EURGBP 0.43, and EURUSD 0.96. Validated on XAUUSD only -- see edges."
     },
     "TrendPullback": {
       "oos_trades": 88,
@@ -82,8 +82,8 @@
       "why": "built to fix TrendFollowing's state-vs-event entry; measured worse than the thing it replaced"
     },
     "EnsembleADXTrend": {
-      "oos_trades": 0,
-      "why": "NOT MEASURED, not refuted. Zero trades on all 7 symbols because the harness did not register ADX, so the strategy read None on every bar. The harness was fixed after this run had started, so it still needs measuring."
+      "oos_trades": 111,
+      "why": "now genuinely measured, after the harness was fixed to register ADX -- it had previously returned zero trades on every symbol and was wrongly printed as 'no edge'. Measured on the four symbols run after the fix: NZDUSD 1.12 but on only 28 trades (below the 30 minimum) and 6/16 folds, GBPJPY 0.95, EURJPY 0.51, EURGBP 0.41. Refuted on evidence rather than on a missing indicator."
     },
     "DonchianBreakout": {
       "oos_trades": 520,
@@ -93,11 +93,25 @@
     },
     "RSIMeanReversion": {
       "oos_trades": 314,
-      "why": "validated on EURUSD only. USDJPY reached PF 1.25 on 39 trades but only 6/16 folds; AUDUSD 0.77, GBPUSD 0.72, XAUUSD 0.59, USDCHF 0.56, USDCAD 0.51."
+      "why": "validated on EURUSD only. The near misses all failed the fold test with a high PF, which is the sweep's most repeated pattern: EURJPY 1.23 on 7/16, GBPJPY 1.23 on 6/16, USDJPY 1.25 on 6/16. Elsewhere AUDUSD 0.77, GBPUSD 0.72, NZDUSD 0.68, XAUUSD 0.59, USDCHF 0.56, EURGBP 0.54, USDCAD 0.51."
     },
     "StrengthReversion": {
       "oos_trades": 802,
       "why": "no symbol above 1.0: XAUUSD 0.92, USDCHF 0.88, GBPUSD 0.84, USDJPY 0.79, AUDUSD 0.78, USDCAD 0.74, EURUSD 0.69."
+    },
+    "_symbols_with_no_edge_at_all": {
+      "symbols": [
+        "EURGBP",
+        "EURJPY",
+        "GBPJPY",
+        "NZDUSD",
+        "USDJPY",
+        "USDCAD",
+        "AUDUSD",
+        "USDCHF",
+        "GBPUSD"
+      ],
+      "why": "nine of eleven symbols had no strategy clear the bar. EURGBP was the worst measured anywhere: every strategy between 0.41 and 0.59, and the highest cost per trade of the whole sweep at 6.3-7.9 against 0.38 on XAUUSD -- its entries were negative even before friction, so cheaper execution would not save it."
     }
   },
   "_example_entry_do_not_uncomment": {
@@ -121,5 +135,5 @@
     ],
     "validated_at": "2026-09-02T00:00:00+00:00"
   },
-  "_selection_caveat": "Both entries come from a single sweep of 7 symbols x 5 strategies on 2026-09-03. 28 cells carried trades and 2 cleared the bar. With 28 simultaneous hypotheses that yield is not distinguishable from chance, so these are hypotheses carried forward on a demo account, not established edges. The bar was fixed before any result was seen and was not moved afterwards: GBPUSD/DonchianBreakout at PF 1.15 was refused on exactly 8/16 folds, because half is not more than half."
+  "_selection_caveat": "Both entries come from one sweep of 11 symbols x 5 strategies on 2026-09-03/04. 53 cells carried trades and 2 cleared the bar. With 53 simultaneous hypotheses that yield is not distinguishable from chance, so these are hypotheses carried forward on a demo account, not established edges. The bar was fixed before any result was seen and was not moved afterwards, including for GBPUSD/DonchianBreakout at PF 1.15 on exactly 8/16 folds. Five cells reached PF above 1.1 and four of the five failed the fold test -- a high PF with few profitable folds almost always means a handful of large winners rather than an edge."
 }
