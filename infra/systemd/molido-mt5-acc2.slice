@@ -1,0 +1,27 @@
+# Resource cage for the SECOND MT5 terminal (account 2 / prop challenge).
+#
+# The first stack runs under molido-mt5.slice with MemoryHigh=1200M. MemoryHigh
+# is a soft limit: it applies reclaim pressure but does not stop a cgroup from
+# growing, so a stack that genuinely wants more memory still gets it and the
+# host pays. On 2026-09-04 starting a second Wine + MT5 + Xvfb stack on a
+# 5.8 GB box took the whole machine down -- sshd and nginx both stopped
+# answering while the kernel still completed TCP handshakes, which is
+# indistinguishable from a dead host and cannot be fixed from inside. It
+# needed a power cycle from the hosting panel.
+#
+# MemoryMax is therefore set as well, and set below MemoryHigh's usual
+# headroom: the second terminal is the newer, less important workload, and if
+# something has to be killed it should be that rather than the account that is
+# already trading. Under MemoryMax the cgroup's own processes are OOM-killed;
+# the host stays up and the watchdog restarts what it can.
+#
+# CPUQuota is deliberately lower than the first stack's 140%: two terminals
+# competing for two cores is what made the box unresponsive under load even
+# before memory ran out.
+[Slice]
+MemoryHigh=700M
+MemoryMax=900M
+MemorySwapMax=0
+CPUQuota=60%
+CPUWeight=30
+TasksMax=800
