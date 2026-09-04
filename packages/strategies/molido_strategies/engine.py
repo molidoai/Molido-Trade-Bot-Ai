@@ -15,22 +15,29 @@ from molido_strategies.base import Strategy, StrategyContext, StrategySignal, Si
 
 from molido_strategies.trend.trend_following import TrendFollowingStrategy
 from molido_strategies.trend.trend_pullback import TrendPullback
-from molido_strategies.trend.ensemble import EnsembleTrend, EnsembleADXTrend
-from molido_strategies.mean_reversion.strength_reversion import StrengthReversion
 from molido_strategies.breakout.donchian_breakout import DonchianBreakoutStrategy
 from molido_strategies.mean_reversion.rsi_reversion import RSIMeanReversionStrategy
 
 
+# EnsembleTrend, EnsembleADXTrend and StrengthReversion were registered here
+# and imported from modules that were never committed. The package was
+# therefore unimportable in a fresh clone and in CI, while passing on the
+# machine that had the files and running fine in an image already built with
+# them -- the failure only ever surfaced for the next person.
+#
+# They are not restored because both were measured to a conclusion on
+# 2026-09-03/04 and refuted on their own numbers. EnsembleADXTrend, once the
+# harness was fixed to compute ADX: NZDUSD 1.12 on 28 trades (under the 30
+# minimum) and 6/16 folds, GBPJPY 0.95, EURJPY 0.51, EURGBP 0.41.
+# StrengthReversion across all eleven symbols: 0.69 to 0.98, never above 1.0.
+# Neither was enabled live. The evidence is kept in proven_edges.json.
+#
+# To bring one back, commit its module and add the entry -- the test in
+# tests/unit/repo/test_imports_resolve.py fails if the file is not committed.
 STRATEGY_REGISTRY: dict[str, type[Strategy]] = {
     "TrendFollowing": TrendFollowingStrategy,
     # Candidate replacement; registered so it can be measured, not enabled.
     "TrendPullback": TrendPullback,
-    # Filters are switchable so combinations can be measured, not argued.
-    "EnsembleTrend": EnsembleTrend,
-    # The ADX25 + 50/200 preset, selectable by name from settings.
-    "EnsembleADXTrend": EnsembleADXTrend,
-    # The only signal so far to beat its own shuffled control.
-    "StrengthReversion": StrengthReversion,
     "DonchianBreakout": DonchianBreakoutStrategy,
     "RSIMeanReversion": RSIMeanReversionStrategy,
 }

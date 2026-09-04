@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from molido_brain.swap import overnight_swap_r, veto_weekend_hold, HEAVY_NEGATIVE_SWAP_R
@@ -38,5 +38,7 @@ def test_brain_ev_subtracts_swap():
         risk_reward=2,
         accepted=True,
     )
-    d = b.decide(sig)
+    # Pinned like the rest: an unpinned decide() reads the wall clock, and
+    # the weekend-swap veto then makes the result depend on the weekday.
+    d = b.decide(sig, now=datetime(2024, 1, 3, 13, 0, tzinfo=timezone.utc))
     assert d.allow is True

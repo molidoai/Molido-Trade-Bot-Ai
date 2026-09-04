@@ -3,6 +3,14 @@ from molido_signals.engine import FinalSignal
 from molido_strategies.base import SignalSide
 from datetime import datetime, timezone
 
+# A fixed clock. The weekend-swap veto reads the wall clock when no `now` is
+# given, so on a Friday it fires first and masks whatever a test was actually
+# checking -- these tests passed Monday to Thursday and failed on Friday.
+# Wednesday is chosen because it trips neither the Thursday-NY nor the Friday
+# branch of veto_weekend_hold.
+MIDWEEK = datetime(2024, 1, 3, 13, 0, tzinfo=timezone.utc)
+
+
 
 def _sig(**kw):
     d = dict(
@@ -33,7 +41,7 @@ def test_clamp_size_never_enlarges():
 
 def test_brain1_vetoes_against_h1():
     b = DecisionBrain()
-    d = b.decide(_sig(), h1_side="SELL")
+    d = b.decide(_sig(), h1_side="SELL", now=MIDWEEK)
     assert d.allow is False
     assert d.size_mult == 0.0
     assert any(v.name == "setup" and not v.allow for v in d.votes)
@@ -41,14 +49,14 @@ def test_brain1_vetoes_against_h1():
 
 def test_brain1_vetoes_session_closed():
     b = DecisionBrain()
-    d = b.decide(_sig(), h1_side="BUY", spread=0.00005, session_ok=False)
+    d = b.decide(_sig(), h1_side="BUY", spread=0.00005, session_ok=False, now=MIDWEEK)
     assert d.allow is False
     assert any("session" in r.lower() for r in d.reasons)
 
 
 def test_brain1_vetoes_bad_universe_score():
     b = DecisionBrain()
-    d = b.decide(_sig(), h1_side="BUY", spread=0.00005, universe_score=-1.0)
+    d = b.decide(_sig(), h1_side="BUY", spread=0.00005, universe_score=-1.0, now=MIDWEEK)
     assert d.allow is False
     assert any("universe" in r.lower() for r in d.reasons)
 
@@ -60,8 +68,7 @@ def test_brain3_vetoes_correlation():
         h1_side="BUY",
         spread=0.00005,
         open_symbols=["GBPUSD"],
-        symbol="EURUSD",
-    )
+        symbol="EURUSD", now=MIDWEEK)
     assert d.allow is False
     assert any("correlat" in r.lower() for r in d.reasons)
     assert any(v.name == "survival" and not v.allow for v in d.votes)
@@ -76,8 +83,7 @@ def test_brain3_vetoes_daily_loss():
         daily_pnl=-250.0,
         equity=10_000.0,
         daily_loss_limit=0.02,
-        open_symbols=[],
-    )
+        open_symbols=[], now=MIDWEEK)
     assert d.allow is False
     assert any("daily loss" in r.lower() for r in d.reasons)
     assert any(v.name == "survival" and not v.allow for v in d.votes)
@@ -85,7 +91,7 @@ def test_brain3_vetoes_daily_loss():
 
 def test_series_min_size_not_enlarge():
     b = DecisionBrain()
-    d = b.decide(_sig(), h1_side="BUY", spread=0.00005, open_symbols=[])
+    d = b.decide(_sig(), h1_side="BUY", spread=0.00005, open_symbols=[], now=MIDWEEK)
     assert d.size_mult in (0.0, 0.5, 1.0)
 
 
