@@ -100,6 +100,20 @@ class AccountConfig:
 
 # Keys copied from the top-level runtime settings into every account as
 # defaults; an account entry may override any of them.
+#
+# This is a whitelist, and anything the engine reads per cycle but that is
+# missing here is silently dropped the moment a second account exists -- the
+# single-account path passes the whole settings dict, so the key works right up
+# until an `accounts` list appears and then stops, with nothing logged.
+#
+# That is not hypothetical: symbol_strategies, indicators, strategies and
+# autopilot were all absent. Adding a prop account would have quietly
+# un-restricted every symbol on BOTH accounts, putting the strategies that
+# lost money back on the symbols they lost it on, at the exact moment a
+# challenge started.
+#
+# If you add a setting the runner reads, add it here in the same change. The
+# test in tests/unit/accounts/test_inherited_keys.py fails when the two drift.
 _INHERITED_KEYS = (
     "default_risk_per_trade",
     "max_daily_loss",
@@ -107,9 +121,16 @@ _INHERITED_KEYS = (
     "max_drawdown",
     "max_open_positions",
     "max_entries_per_day",
+    "max_consecutive_losses",
+    "consecutive_loss_pause_seconds",
     "session_overlap_only",
     "master_bot_enabled",
     "strategy_names",
+    "strategies",
+    "symbol_strategies",
+    "indicators",
+    "autopilot",
+    "require_proven_edge",
     "symbols",
     "timeframe",
 )
