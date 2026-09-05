@@ -198,9 +198,29 @@ class MT5BrokerAdapter(BrokerAdapter):
             kwargs: dict[str, Any] = {"timeout": self.timeout}
             if self.path:
                 kwargs["path"] = self.path
+            # Hand initialize() the credentials when we have them, so it can
+            # launch the terminal *and* sign it in. Without them it attaches to
+            # a terminal that must already be logged in by its own start.ini,
+            # and a terminal that is running but not signed in never answers:
+            # the call fails with "IPC timeout" and says nothing about why.
+            #
+            # That is what a second account hits. Account 1 works because its
+            # start.ini carries credentials; account 2 was added from the
+            # dashboard, which writes the engine's account entry but no .ini,
+            # so its terminal came up unauthenticated and every connect timed
+            # out. Passing the credentials here removes the dependency on a
+            # file the dashboard never creates -- and on a file that has to
+            # hold the password in plaintext next to the terminal.
+            if self.login and self.password and self.server:
+                kwargs.update(login=self.login, password=self.password, server=self.server)
             if not self._mt5.initialize(**kwargs):
                 logger.error("MT5 initialize failed: %s", self._mt5.last_error())
                 return False
+            # Still call login explicitly. initialize() with credentials is
+            # documented to sign in, but it also succeeds when it merely
+            # attached to an already-running terminal signed in as someone
+            # else -- which on a host running two accounts is a real way to
+            # trade the wrong account. login() makes the identity explicit.
             if self.login and self.password and self.server:
                 authorized = self._mt5.login(self.login, password=self.password, server=self.server)
                 if not authorized:
