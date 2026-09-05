@@ -33,6 +33,11 @@ class _OpenPos:
     entry_bar: int
     commission_paid: float = 0.0
     slippage_paid: float = 0.0
+    # Bars after which this position is closed regardless of SL/TP. Carried on
+    # the position, not on the engine, so a mixed book expires each trade on
+    # the horizon its own strategy declared rather than on one global number
+    # applied to strategies that never asked for it. 0 means no time exit.
+    max_hold_bars: int = 0
 
 
 class BacktestEngine:
@@ -45,6 +50,7 @@ class BacktestEngine:
         cost_model: CostModel | None = None,
         max_open: int = 1,
         min_risk_reward: float = 0.0,
+        max_hold_bars: int = 0,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -53,6 +59,9 @@ class BacktestEngine:
         self.costs = cost_model or CostModel()
         self.max_open = max_open
         self.min_risk_reward = min_risk_reward
+        # An override for studies that sweep the holding horizon. 0 defers to
+        # whatever each strategy declares for itself.
+        self.max_hold_bars = max_hold_bars
         self._regime_engine = None
 
     def run(
@@ -118,6 +127,35 @@ class BacktestEngine:
                     equity += pnl_net
                     returns.append(pnl_net / self.initial_capital)
                     open_pos = None
+
+            # --- Time exit: the measured horizon has run out ---
+            if open_pos is not None and open_pos.max_hold_bars > 0                     and (i - open_pos.entry_bar) >= open_pos.max_hold_bars:
+                fill = cost.exit_cost_price(open_pos.side, bar.close)
+                pnl = self._pnl(open_pos.side, open_pos.entry_price, fill, open_pos.volume, symbol)
+                commission = cost.commission(open_pos.volume)
+                slip_cost = abs(fill - bar.close) * open_pos.volume * (100_000 if not symbol.startswith("XAU") else 100)
+                pnl_net = pnl - commission - open_pos.commission_paid
+                trades.append(BacktestTrade(
+                    symbol=symbol,
+                    side=open_pos.side,
+                    entry_time=open_pos.entry_time,
+                    exit_time=bar.open_time,
+                    entry_price=open_pos.entry_price,
+                    exit_price=fill,
+                    volume=open_pos.volume,
+                    stop_loss=open_pos.stop_loss,
+                    take_profit=open_pos.take_profit,
+                    pnl=pnl,
+                    pnl_net=pnl_net,
+                    commission=commission + open_pos.commission_paid,
+                    slippage_cost=slip_cost + open_pos.slippage_paid,
+                    strategy=open_pos.strategy,
+                    exit_reason="time",
+                    bars_held=i - open_pos.entry_bar,
+                ))
+                equity += pnl_net
+                returns.append(pnl_net / self.initial_capital)
+                open_pos = None
 
             # --- Mark equity ---
             if open_pos is not None:
@@ -213,6 +251,7 @@ class BacktestEngine:
                 entry_bar=i,
                 commission_paid=commission,
                 slippage_paid=slip,
+                max_hold_bars=self._hold_limit(sig.strategy_name),
             )
 
         # Force close at end
@@ -256,6 +295,19 @@ class BacktestEngine:
                 "warmup": warmup,
             },
         )
+
+    def _hold_limit(self, strategy_name: str) -> int:
+        """How many bars this strategy's positions may be held.
+
+        The engine-level setting wins when set, so a study can sweep the
+        horizon. Otherwise the strategy speaks for itself -- a strategy whose
+        edge was measured over a fixed horizon knows that horizon, and nothing
+        else does.
+        """
+        if self.max_hold_bars > 0:
+            return self.max_hold_bars
+        strat = self.strategies._strategies.get(strategy_name)
+        return int(getattr(strat, "max_hold_bars", 0) or 0)
 
     @staticmethod
     def _check_exit(pos: _OpenPos, bar: Candle) -> tuple[float, str] | None:
