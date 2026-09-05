@@ -142,3 +142,76 @@ and is the first thing to close if its live record trails the other two.
   sweep, not established edges.
 * **Loosening a filter to trade more often.** Fewer trades is what the evidence
   supports; the measurements say loosening costs money rather than making it.
+
+---
+
+# Running a second MT5 account (findings, 2026-09-05)
+
+A prop account was added alongside the demo. It does not yet trade, and the
+reason is worth writing down because four separate faults were fixed on the way
+and none of them was the blocker.
+
+## The blocker: the terminal does not know the broker
+
+The MT5 installed here is the generic MetaQuotes build. It carries no server
+definitions for any third-party broker, so `Server=FundedNext-Server3` in
+`start2.ini` resolves to nothing. The terminal starts, reads its config, and
+then simply never attempts a connection.
+
+The tell is in the terminal's own log. A working account has:
+
+```
+Network  '<login>': terminal synchronized with MetaQuotes Ltd.
+Network  '<login>': trading has been enabled
+```
+
+The prop terminal's log has no `Network` line at all — not a failure, an
+absence. `find` over its install directory returns zero `.srv` files and no
+occurrence of the broker's name anywhere.
+
+**What it needs:** the broker's own MT5 installer, which bundles their server
+list. A generic terminal will never reach them.
+
+## What was fixed on the way, and is worth keeping
+
+* **The `/config:` argument must be quoted with backslashes.** Bare, bash eats
+  the separators. Forward-slashed, MT5 truncates at the first slash, starts
+  with no config, and logs `launched with C:\`. Both wrong forms look right.
+  The bridge's Python path is the opposite: forward slashes, because bash eats
+  backslashes there too and Wine received `C:mt5rpyc_server2.py`.
+* **`start2.ini` did not exist.** Adding the account from the dashboard writes
+  the engine's account entry but no terminal config; that file comes from
+  `setup-account2.sh`.
+* **`symbol_strategies` was not inherited per account.** The moment an
+  `accounts` list existed, the per-symbol map silently emptied on *both*
+  accounts. Guarded now by `tests/unit/accounts/test_inherited_keys.py`.
+* **The prop floor was disabled.** The dashboard sets no
+  `prop_initial_balance`, so the hard floor that keeps a challenge alive was
+  `0` — configured, enabled, unprotected. It is now 15000 at 10%, refusing to
+  trade below 13500, which matches the firm's own line exactly.
+
+## Two accounts cannot both serve the Python API here
+
+MT5 binds `127.0.0.1:22346` for its API and the port is not configurable. The
+second terminal logs:
+
+```
+MCP  bind error on 127.0.0.1:22346 [ (10048)]
+```
+
+Separate Wine prefixes (`/opt/wine-mt5-acc2` exists and works) give each
+terminal its own `wineserver`, but **not** its own loopback — the host's
+`127.0.0.1` is shared. Proper isolation needs a network namespace per terminal.
+Until then it is one account at a time; `recover_host.sh --prop` / `--demo`
+switches cleanly.
+
+## Test any of this so it restores itself
+
+Two experiments today left the box with nothing running, because the rollback
+depended on the operator still having a shell — and SSH kept dropping. The
+third put the restore in a `trap` and ran detached with `nohup`, so neither a
+dropped session nor a stalled host could strand the service in the broken half
+of a swap. It failed, restored account 1 by itself, and cost nothing.
+
+Do it that way. The pattern is in `/tmp/try_prop2.sh` on the server and is
+worth copying rather than reinventing under pressure.
