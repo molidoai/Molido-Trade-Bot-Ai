@@ -306,7 +306,7 @@ class BacktestEngine:
         """
         if self.max_hold_bars > 0:
             return self.max_hold_bars
-        strat = self.strategies._strategies.get(strategy_name)
+        strat = self.strategies.get(strategy_name)
         return int(getattr(strat, "max_hold_bars", 0) or 0)
 
     @staticmethod

@@ -1,4 +1,4 @@
-"""Open-trade management: break-even, partial, ATR trail, time stop.
+"""Open-trade management: break-even, partial, ATR trail, time stop, horizon exit.
 
 Uses broker modify/close. Never invents prices.
 """
@@ -17,9 +17,17 @@ logger = logging.getLogger(__name__)
 
 
 class TradeManager:
-    def __init__(self, broker: BrokerAdapter, positions: PositionManager):
+    def __init__(self, broker: BrokerAdapter, positions: PositionManager,
+                 journal: Any = None,
+                 strategies: Any = None):
         self.broker = broker
         self.positions = positions
+        # The live strategy registry, not a copy of it. The set is
+        # reconfigured while the bot runs, so a dict snapshotted here would
+        # answer with a stale set and the exit would quietly stop firing --
+        # the same failure as holding the ticket map in memory.
+        self.strategies = strategies
+        self._journal = journal
         self._state: dict[str, dict[str, Any]] = {}
 
     def _st(self, pos) -> dict[str, Any]:
@@ -63,6 +71,18 @@ class TradeManager:
             if t >= opened:
                 n += 1
         return n
+
+    def _horizon_for(self, pos) -> int:
+        """Bars this position may be held, per the strategy that opened it."""
+        if self.strategies is None or self._journal is None:
+            return 0
+        try:
+            name = self._journal.strategy_by_ticket().get(str(pos.ticket))
+        except Exception:
+            logger.debug("could not read strategy for ticket %s", pos.ticket, exc_info=True)
+            return 0
+        strat = self.strategies.get(name) if name else None
+        return int(getattr(strat, "max_hold_bars", 0) or 0)
 
     async def manage_symbol(
         self,
@@ -129,7 +149,9 @@ class TradeManager:
                         if ok:
                             actions.append(f"{symbol} ATR trail SL={new_sl:.5f}")
 
-            # 3. Time stop: M15 not at +0.5R after 8 closed bars
+            # 3. Time stop: M15 not at +0.5R after 8 closed bars. This is a
+            #    risk rule about trades that are going nowhere, and it is kept
+            #    as it was.
             if is_m15:
                 held = self.bars_held(pos, candles)
                 if held >= 8 and r < 0.5:
@@ -137,6 +159,25 @@ class TradeManager:
                     ok = getattr(res, "success", False)
                     actions.append(f"{symbol} time-stop ticket={pos.ticket} bars={held} R={r:.2f} ok={ok}")
                     logger.info("Time stop ticket=%s bars=%s R=%.2f", pos.ticket, held, r)
+                    continue
+
+            # 4. Holding horizon. Different rule, different reason: a strategy
+            #    whose edge was measured over N bars has no evidence past bar
+            #    N, so the position is closed whether it is winning or losing.
+            #    The rule above only cuts laggards and would hold a winner
+            #    indefinitely -- long after the effect that justified entering
+            #    had decayed, which is not the bet that was measured.
+            horizon = self._horizon_for(pos)
+            if horizon > 0:
+                held = self.bars_held(pos, candles)
+                if held >= horizon:
+                    res = await self.broker.close_position(pos.ticket)
+                    ok = getattr(res, "success", False)
+                    actions.append(
+                        f"{symbol} horizon-exit ticket={pos.ticket} "
+                        f"bars={held}/{horizon} R={r:.2f} ok={ok}")
+                    logger.info("Horizon exit ticket=%s bars=%s/%s R=%.2f",
+                                pos.ticket, held, horizon, r)
 
         live = {str(p.ticket) for p in self.positions.get_all()}
         for t in list(self._state):

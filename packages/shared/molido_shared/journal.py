@@ -164,6 +164,28 @@ class TradeJournal:
                 continue
         return out
 
+    def strategy_by_ticket(self) -> dict[str, str]:
+        """Which strategy opened each trade, keyed by ticket.
+
+        The broker's position record has no idea what opened it, so a rule
+        that depends on the originating strategy -- a holding horizon, say --
+        has nowhere else to look. It is read back from the journal rather than
+        held in memory on purpose: the engine is restarted routinely (the
+        watchdog does it whenever the MT5 bridge drops), and an in-memory map
+        would come back empty every time, silently disabling the rule while
+        everything still looked healthy.
+        """
+        out: dict[str, str] = {}
+        for rec in self._read():
+            if rec.get("event") != "fill":
+                continue
+            ticket = rec.get("ticket")
+            strategy = rec.get("strategy")
+            if ticket is None or not strategy:
+                continue
+            out[str(ticket)] = str(strategy)
+        return out
+
     def last_close_time(self):
         """Timestamp of the most recent closed trade, for the pause window."""
         from datetime import datetime, timezone

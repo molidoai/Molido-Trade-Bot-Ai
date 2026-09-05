@@ -507,7 +507,13 @@ class LiveRunner:
         self.positions = PositionManager(self.broker)
         self.portfolio = PortfolioManager(self.broker, self.positions, account_mode=self.account_mode)
         self.reconciler = Reconciler(self.broker, self.positions)
-        self.trade_manager = TradeManager(self.broker, self.positions)
+        self.trade_manager = TradeManager(
+            self.broker, self.positions,
+            journal=self.journal,
+            # The engine itself, so the horizon is read off the strategy that
+            # declared it at the moment it is needed.
+            strategies=self.strategies,
+        )
         self.pipeline = TradingPipeline(
             indicator_engine=self.indicators,
             strategy_engine=self.strategies,

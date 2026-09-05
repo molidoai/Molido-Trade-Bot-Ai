@@ -111,6 +111,10 @@ class StrategyEngine:
         return [n for n, s in self._strategies.items()
                 if s.enabled and (allow is None or n in allow)]
 
+    def get(self, name: str) -> Strategy | None:
+        """The live instance under this name, or None."""
+        return self._strategies.get(name)
+
     def register(self, name: str, strategy: Strategy) -> None:
         self._strategies[name] = strategy
 
