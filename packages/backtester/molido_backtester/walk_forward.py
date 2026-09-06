@@ -59,6 +59,7 @@ def walk_forward(
     regime: str = "Bull",
     min_risk_reward: float = 0.0,
     max_hold_bars: int = 0,
+    brain: object | None = None,
 ) -> WalkForwardResult:
     step = step or test_bars
     costs = cost_model or CostModel(spread_points=1.2, slippage_points=0.5, commission_per_lot=7.0)
@@ -78,6 +79,7 @@ def walk_forward(
         cost_model=costs, max_open=1,
         min_risk_reward=min_risk_reward,
         max_hold_bars=max_hold_bars,
+        brain=brain,
     )
     i = 0
     while True:

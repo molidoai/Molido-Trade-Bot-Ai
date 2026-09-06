@@ -8,6 +8,7 @@ Event-driven Backtester (Master Prompt §18).
 """
 
 from __future__ import annotations
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -16,6 +17,8 @@ from typing import Sequence, Any
 from molido_shared.types import Candle, TimeFrame
 from molido_indicators.engine import IndicatorEngine
 from molido_strategies.engine import StrategyEngine
+
+logger = logging.getLogger(__name__)
 from molido_strategies.base import SignalSide
 from molido_backtester.models import BacktestTrade, BacktestMetrics, BacktestResult
 from molido_backtester.costs import CostModel
@@ -51,6 +54,7 @@ class BacktestEngine:
         max_open: int = 1,
         min_risk_reward: float = 0.0,
         max_hold_bars: int = 0,
+        brain: object | None = None,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -62,6 +66,13 @@ class BacktestEngine:
         # An override for studies that sweep the holding horizon. 0 defers to
         # whatever each strategy declares for itself.
         self.max_hold_bars = max_hold_bars
+        # The live path runs every signal past DecisionBrain before sizing it,
+        # and the brain vetoes the large majority: 7,291 of 9,196 recorded
+        # vetoes came from this layer, against 264 accepts. A backtest without
+        # it measures the strategy, not the bot -- so its profit factor
+        # describes roughly thirty times more trades than the bot would take,
+        # chosen differently. Pass a brain to measure what actually runs.
+        self.brain = brain
         self._regime_engine = None
 
     def run(
@@ -219,6 +230,37 @@ class BacktestEngine:
                     continue
 
             sig = max(actionable, key=lambda s: s.confidence)
+
+            # --- The decision layer, when one is supplied ---
+            if self.brain is not None:
+                side_val = getattr(sig.side, "value", str(sig.side))
+                agreeing = sum(
+                    1 for s2 in actionable
+                    if getattr(s2.side, "value", str(s2.side)) == side_val
+                ) or 1
+                try:
+                    verdict = self.brain.decide(
+                        sig,
+                        indicators=ind_latest,
+                        regime=bar_regime,
+                        agreeing=agreeing,
+                        h1_side=self._h1_side(window),
+                        spread=cost.spread_price(mid) if hasattr(cost, "spread_price") else None,
+                        candles=window,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        equity=equity,
+                    )
+                except Exception:
+                    # A brain that throws must not silently become a brain that
+                    # approves -- that would quietly restore the very numbers
+                    # this is here to correct. Refuse the bar instead.
+                    logger.debug("brain raised on %s; treating as veto", symbol, exc_info=True)
+                    continue
+                size_mult = min(1.0, float(getattr(verdict, "size_mult", 1.0) or 0.0))
+                if not getattr(verdict, "allow", False) or size_mult <= 0:
+                    continue
+
             entry_mid = mid
             fill = cost.entry_cost_price(sig.side.value, entry_mid)
 
@@ -295,6 +337,36 @@ class BacktestEngine:
                 "warmup": warmup,
             },
         )
+
+    @staticmethod
+    def _h1_side(window) -> str | None:
+        """The H1 trend direction, resampled from the window.
+
+        The brain's hardest veto is "against H1 filter" -- 936 of the recorded
+        ones. Omitting it here would let the backtest approve trades the live
+        bot refuses, which is the opposite of the point.
+        """
+        try:
+            from molido_brain.features import h1_side_from_bars
+        except Exception:
+            return None
+        if not window:
+            return None
+        step = 4  # M15 -> H1; a coarser input just makes this a no-op grouping
+        h1: list = []
+        for i in range(0, len(window) - step + 1, step):
+            grp = window[i:i + step]
+            first, last = grp[0], grp[-1]
+            h1.append(type(first)(
+                symbol=first.symbol, timeframe=first.timeframe,
+                open_time=first.open_time, open=first.open,
+                high=max(c.high for c in grp), low=min(c.low for c in grp),
+                close=last.close, volume=sum(c.volume for c in grp),
+            ))
+        try:
+            return h1_side_from_bars(h1)
+        except Exception:
+            return None
 
     def _hold_limit(self, strategy_name: str) -> int:
         """How many bars this strategy's positions may be held.
