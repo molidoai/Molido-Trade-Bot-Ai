@@ -491,6 +491,12 @@ class TradingPipeline:
                 take_profit=order_tp,
                 risk_amount=round(risk_result.risk_amount * min(1.0, size_mult), 2),
                 strategy=final.strategy,
+                # The bar size this entry was decided on. Trade management --
+                # the holding horizon above all -- counts bars, so it has to
+                # count the same bars the entry was made on. Without this the
+                # exit side falls back to a fixed timeframe and a position
+                # opened on one bar size is managed on another.
+                timeframe=getattr(timeframe, "value", timeframe),
                 # Why this trade was taken. Without it a losing record can be
                 # counted but not diagnosed -- you can see that a strategy lost
                 # without ever seeing what it thought it saw.

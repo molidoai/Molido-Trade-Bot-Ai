@@ -238,6 +238,30 @@ def _post_heartbeat() -> None:
 DATA_DIR = os.path.dirname(os.getenv("RUNTIME_SETTINGS_PATH", "/app/data/runtime-settings.json")) or "/app/data"
 
 
+def _default_timeframe(tf_override) -> TimeFrame:
+    """The bar size to fall back to when a position's own is unknown.
+
+    M15 was hardcoded here, so pinning an account to H1 moved entries but left
+    management on M15 -- half a switch, and the half that decides when to exit
+    stayed behind. An explicit setting now governs both; "auto" still means
+    M15, which is what the auto sweep opens on.
+    """
+    if tf_override and not is_auto_timeframe(tf_override):
+        raw = str(tf_override).strip()
+        # Settings say "H1"; the enum's *value* is "1h". Looking up only one of
+        # the two makes every explicit setting fall through to the default --
+        # which is the bug this function exists to fix, so accept both.
+        try:
+            return TimeFrame[raw.upper()]
+        except KeyError:
+            pass
+        try:
+            return TimeFrame(raw.lower())
+        except ValueError:
+            pass
+    return TimeFrame.M15
+
+
 class LiveRunner:
     """Trades exactly one broker account.
 
@@ -264,7 +288,7 @@ class LiveRunner:
         acc_settings = account.settings or rt
         self.tf_override = account.timeframe
         self.symbols = resolve_universe(account.symbols)
-        self.timeframe = TimeFrame.M15
+        self.timeframe = _default_timeframe(self.tf_override)
         self.picker = UniversePicker()
         self.cycle_seconds = cycle_seconds
         self.account_mode = account.account_mode
@@ -429,7 +453,7 @@ class LiveRunner:
         self.account_mode = acc.account_mode
         self.tf_override = acc.timeframe
         self.symbols = resolve_universe(acc.symbols)
-        self.timeframe = TimeFrame.M15
+        self.timeframe = _default_timeframe(self.tf_override)
         if "master_bot_enabled" in settings:
             self.master_bot_on = bool(settings.get("master_bot_enabled"))
         overlap_only = _overlap_only(settings)
@@ -991,12 +1015,40 @@ class LiveRunner:
             logger.warning("%s exec failed: %s", symbol, result.exec_result.message)
         return False
 
+    def _position_timeframe(self, symbol: str) -> TimeFrame:
+        """The bar size the open position on this symbol was entered on.
+
+        Falls back to the configured timeframe when the journal has no record
+        -- positions opened before this was tracked, or a broker position the
+        engine did not open itself.
+        """
+        try:
+            by_ticket = self.journal.timeframe_by_ticket()
+        except Exception:
+            return self.timeframe
+        for pos in (self.positions.by_symbol(symbol) if self.positions else []):
+            raw = by_ticket.get(str(getattr(pos, "ticket", "")))
+            if not raw:
+                continue
+            try:
+                return TimeFrame(raw)
+            except ValueError:
+                continue
+        return self.timeframe
+
     async def _manage_open(self, symbol: str) -> None:
         if self.trade_manager is None or self.positions is None:
             return
         if self.positions.by_symbol(symbol) == []:
             return
-        raw = await self.market_data.get_candles(symbol, self.timeframe, count=40)
+        # Manage each position on the bar size it was opened on. self.timeframe
+        # is fixed at M15 while entries are swept across M15 and M5 (or pinned
+        # by tf_override), so using it here managed an M5 entry on M15 bars --
+        # and the holding horizon counts bars, which made the horizon wrong by
+        # the ratio between them. Positions opened before the timeframe was
+        # journalled have no entry and keep the configured default.
+        tf = self._position_timeframe(symbol)
+        raw = await self.market_data.get_candles(symbol, tf, count=40)
         try:
             candles = closed_bars(raw, as_of=self._broker_now(), min_bars=8) if raw else []
         except InsufficientDataError:
@@ -1015,7 +1067,7 @@ class LiveRunner:
         for pos in self.positions.by_symbol(symbol):
             st = self.trade_manager._st(pos)
             self.journal.update_mae_mfe(pos.ticket, price=price, entry=pos.entry_price, side=pos.side, stop_distance=st.get("stop_dist"))
-        await self.trade_manager.manage_symbol(symbol, candles=candles, atr=atr, timeframe=self.timeframe, price=price)
+        await self.trade_manager.manage_symbol(symbol, candles=candles, atr=atr, timeframe=tf, price=price)
         await self.positions.sync_from_broker()
 
 

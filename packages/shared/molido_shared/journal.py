@@ -186,6 +186,29 @@ class TradeJournal:
             out[str(ticket)] = str(strategy)
         return out
 
+    def timeframe_by_ticket(self) -> dict[str, str]:
+        """Which bar size each trade was opened on, keyed by ticket.
+
+        Read back from the journal for the same reason as
+        strategy_by_ticket: the engine is restarted routinely and an
+        in-memory map would come back empty, silently reverting management to
+        a default bar size while everything still looked healthy.
+
+        Fills written before this was recorded simply have no entry, and the
+        caller falls back to its configured timeframe -- old positions keep
+        the behaviour they were opened under rather than changing mid-trade.
+        """
+        out: dict[str, str] = {}
+        for rec in self._read():
+            if rec.get("event") != "fill":
+                continue
+            ticket = rec.get("ticket")
+            tf = rec.get("timeframe")
+            if ticket is None or not tf:
+                continue
+            out[str(ticket)] = str(tf)
+        return out
+
     def last_close_time(self):
         """Timestamp of the most recent closed trade, for the pause window."""
         from datetime import datetime, timezone
