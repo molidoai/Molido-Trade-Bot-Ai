@@ -304,6 +304,14 @@ class BacktestEngine:
         edge was measured over a fixed horizon knows that horizon, and nothing
         else does.
         """
+        # Negative means "explicitly none". Without this there is no way to
+        # express a no-horizon run: 0 means "defer to the strategy", so a study
+        # asking for no time exit silently got the strategy's own default
+        # instead. That is not hypothetical -- it made a control row identical
+        # to the row it was supposed to control, and the pair looked like
+        # working evidence because the numbers differed for a different reason.
+        if self.max_hold_bars < 0:
+            return 0
         if self.max_hold_bars > 0:
             return self.max_hold_bars
         strat = self.strategies.get(strategy_name)
