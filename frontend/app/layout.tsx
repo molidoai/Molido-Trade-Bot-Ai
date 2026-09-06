@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { Scene3D } from "@/components/scene/Scene3D";
 import { AuthShell } from "@/components/auth/AuthShell";
 import { AppProviders } from "@/components/app/Providers";
 
@@ -32,7 +31,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="fa" dir="rtl" className="dark" suppressHydrationWarning>
       <body className="min-h-dvh">
         <AppProviders>
-          <Scene3D />
           <AuthShell>{children}</AuthShell>
         </AppProviders>
       </body>
