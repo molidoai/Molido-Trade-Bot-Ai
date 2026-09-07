@@ -115,7 +115,9 @@ class BacktestEngine:
                     pnl = self._pnl(open_pos.side, open_pos.entry_price, fill, open_pos.volume, symbol)
                     commission = cost.commission(open_pos.volume)
                     slip_cost = abs(fill - exit_price) * open_pos.volume * (100_000 if not symbol.startswith("XAU") else 100)
-                    pnl_net = pnl - commission - open_pos.commission_paid
+                    swap = cost.swap_cost(open_pos.side, open_pos.volume,
+                                          open_pos.entry_time, bar.open_time)
+                    pnl_net = pnl - commission - open_pos.commission_paid - swap
 
                     trades.append(BacktestTrade(
                         symbol=symbol,
@@ -145,7 +147,9 @@ class BacktestEngine:
                 pnl = self._pnl(open_pos.side, open_pos.entry_price, fill, open_pos.volume, symbol)
                 commission = cost.commission(open_pos.volume)
                 slip_cost = abs(fill - bar.close) * open_pos.volume * (100_000 if not symbol.startswith("XAU") else 100)
-                pnl_net = pnl - commission - open_pos.commission_paid
+                swap = cost.swap_cost(open_pos.side, open_pos.volume,
+                                      open_pos.entry_time, bar.open_time)
+                pnl_net = pnl - commission - open_pos.commission_paid - swap
                 trades.append(BacktestTrade(
                     symbol=symbol,
                     side=open_pos.side,
@@ -302,7 +306,9 @@ class BacktestEngine:
             fill = cost.exit_cost_price(open_pos.side, bar.close)
             pnl = self._pnl(open_pos.side, open_pos.entry_price, fill, open_pos.volume, symbol)
             commission = cost.commission(open_pos.volume)
-            pnl_net = pnl - commission - open_pos.commission_paid
+            swap = cost.swap_cost(open_pos.side, open_pos.volume,
+                                  open_pos.entry_time, bar.open_time)
+            pnl_net = pnl - commission - open_pos.commission_paid - swap
             trades.append(BacktestTrade(
                 symbol=symbol,
                 side=open_pos.side,
