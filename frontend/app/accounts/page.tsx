@@ -16,7 +16,7 @@
  * id, and a blank password means "keep the stored one".
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { API, getToken } from "@/lib/auth";
 
 type Account = {
@@ -131,14 +131,31 @@ export default function AccountsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // Assigned here rather than asked for: the API rejects a duplicate port, and
-  // nobody adding an account knows or cares which number is free.
-  const nextPort = useMemo(() => {
-    const used = new Set(accounts.map((a) => Number(a.rpc_port) || 0));
-    let p = 8001;
-    while (used.has(p)) p += 1;
-    return p;
-  }, [accounts]);
+  // The port is not a free choice: it says which broker's MT5 terminal serves
+  // the account, and each installed terminal listens on exactly one. Picking
+  // "the next free number" produced two accounts on 8002 and then an
+  // unexplainable "rpc_port 8002 is already used" on every subsequent edit.
+  //
+  // Derived from the server string, which is the only field that identifies
+  // the broker. An unknown broker falls back to the next free port, because
+  // there is no terminal for it yet and any guess is as good as another.
+  const TERMINAL_PORTS: { match: string; port: number }[] = [
+    { match: "robo", port: 8002 },
+    { match: "funded", port: 8003 },
+  ];
+
+  const portFor = useCallback(
+    (server: string): number => {
+      const s = (server || "").toLowerCase();
+      const hit = TERMINAL_PORTS.find((t) => s.includes(t.match));
+      if (hit) return hit.port;
+      const used = new Set(accounts.map((a) => Number(a.rpc_port) || 0));
+      let p = 8001;
+      while (used.has(p)) p += 1;
+      return p;
+    },
+    [accounts]
+  );
 
   async function call(path: string, init: RequestInit, ok: string) {
     const token = getToken();
@@ -206,9 +223,10 @@ export default function AccountsPage() {
       name: form.name.trim() || id,
       mt5_login: form.mt5_login.trim(),
       mt5_server: form.mt5_server.trim(),
-      rpc_port: editing
-        ? (accounts.find((a) => a.id === editing)?.rpc_port ?? nextPort)
-        : nextPort,
+      // Recomputed from the server on every save, including edits: changing
+      // an account's broker has to move it to that broker's terminal, and
+      // keeping the old port would silently point it at the wrong one.
+      rpc_port: portFor(form.mt5_server),
     };
     // Blank means "keep the stored password" -- never send an empty string as
     // though it were a new value.

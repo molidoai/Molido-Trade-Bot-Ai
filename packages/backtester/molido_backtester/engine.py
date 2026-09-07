@@ -412,12 +412,32 @@ class BacktestEngine:
 
     @staticmethod
     def _pnl(side: str, entry: float, exit: float, volume: float, symbol: str) -> float:
+        """Profit in account currency (USD).
+
+        A JPY-quoted pair settles in yen, so the move has to be converted
+        before it is called dollars. Without that, GBPJPY reported net figures
+        around 150x too large -- +61,027 where a comparable EURUSD cell showed
+        -597 -- which made JPY rows look like the biggest wins and the biggest
+        disasters in the study when they were neither.
+
+        Profit factor and the fold counts were never distorted by this: PF is
+        a ratio, and a fold is judged by the sign of its net, so a constant
+        scale factor cancels in both. Only the currency amounts were wrong.
+
+        The exit price is the best available spot for the quote currency at
+        the moment of the close, which is what makes it usable as the
+        conversion rate here without a second price feed.
+        """
         direction = 1.0 if side.upper() == "BUY" else -1.0
         move = (exit - entry) * direction
-        # Approximate $ value
         if symbol.startswith("XAU"):
-            return move * volume * 100  # rough
-        return move * volume * 100_000
+            return move * volume * 100        # metals quote per 100 units
+        usd = move * volume * 100_000
+        if symbol.endswith("JPY") and exit:
+            # USDJPY: quote currency IS the exit price. XXXJPY: same divisor,
+            # since the yen leg is what needs converting either way.
+            return usd / exit
+        return usd
 
     def _compute_metrics(
         self,
