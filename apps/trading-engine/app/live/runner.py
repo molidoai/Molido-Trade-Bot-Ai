@@ -431,6 +431,13 @@ class LiveRunner:
             ),
             max_drawdown=num("max_drawdown", 0.04),
             max_open_positions=max(1, max_pos),
+            # The widest spread an entry may pay, in points. Two separate caps
+            # used to exist -- RiskLimits' 20 and ExecutionEngine's 30 -- and
+            # neither could be configured, so the effective limit was a
+            # hardcoded 30 that no setting could reach. Both now come from
+            # here, per account, because brokers differ by more than the gap
+            # between those two numbers.
+            max_spread_points=num("max_spread_points", base.max_spread_points),
             # Prop-challenge backstop; 0 (the default) leaves it off.
             prop_initial_balance=num("prop_initial_balance", 0.0),
             prop_max_loss_pct=num("prop_max_loss_pct", base.prop_max_loss_pct),
@@ -527,7 +534,11 @@ class LiveRunner:
             BrokerType.MT5, login=login, password=password, server=server, path=path,
             rpc_host=self.account.rpc_host, rpc_port=self.account.rpc_port,
         )
-        self.execution = ExecutionEngine(self.broker)
+        # Same cap the risk engine uses. Left at its own default, the
+        # execution engine silently applied 30 points to every account.
+        self.execution = ExecutionEngine(
+            self.broker, max_spread_points=self.risk.limits.max_spread_points
+        )
         self.positions = PositionManager(self.broker)
         self.portfolio = PortfolioManager(self.broker, self.positions, account_mode=self.account_mode)
         self.reconciler = Reconciler(self.broker, self.positions)

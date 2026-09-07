@@ -121,6 +121,11 @@ _INHERITED_KEYS = (
     "max_drawdown",
     "max_open_positions",
     "max_entries_per_day",
+    # Broker-specific, so it has to be overridable per account: the same gold
+    # quote is ~2 points on a raw-spread ECN account and ~70 on a prop firm's
+    # feed. One global number either blocks every trade on the wide broker or
+    # accepts terrible fills on the tight one.
+    "max_spread_points",
     "max_consecutive_losses",
     "consecutive_loss_pause_seconds",
     "session_overlap_only",
