@@ -34,13 +34,19 @@ echo "==> shipping"
 tar czf - $FILES | $SSH "$HOST" 'tar xzf - -C /opt/molido'
 
 echo "==> verifying every file matches"
-BAD=0
-for f in $FILES; do
-  l=$(md5sum "$f" | cut -d' ' -f1)
-  r=$($SSH "$HOST" "md5sum /opt/molido/$f 2>/dev/null | cut -d' ' -f1" || true)
-  if [ "$l" != "$r" ]; then echo "    MISMATCH: $f"; BAD=$((BAD+1)); fi
-done
-[ "$BAD" -eq 0 ] || { echo "$BAD file(s) did not land; not rebuilding" >&2; exit 1; }
+# One connection, not one per file. Opening 128 back-to-back sessions trips
+# sshd's MaxStartups and the drops are reported as MISMATCH, so a perfectly
+# good upload fails the check for a reason that has nothing to do with the
+# files -- which is exactly what happened on the first run of this fix.
+# Compare a single manifest instead: local checksums in, remote result out.
+MANIFEST=$(md5sum $FILES)
+REMOTE=$(printf '%s
+' "$MANIFEST" | $SSH "$HOST" "cd /opt/molido && md5sum -c --quiet - 2>&1" || true)
+if [ -n "$REMOTE" ]; then
+  echo "$REMOTE" | sed 's/^/    /'
+  echo "file(s) did not land; not rebuilding" >&2
+  exit 1
+fi
 echo "    all $COUNT match"
 
 echo "==> rebuilding (CPU-capped)"
