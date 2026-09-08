@@ -73,7 +73,13 @@ logs/
 *.log
 
 # Backtest results / large data
-data/
+# Anchored to the repo root on purpose. Bare `data/` matches a directory of
+# that name at ANY depth, and the only one in this repo is
+# apps/trading-engine/app/data -- source code, not data. That made new files
+# there invisible to git, and deploy_engine.sh ships `git ls-files`, so a new
+# engine module could have been committed-looking, untracked, and silently
+# left out of the image. It already swallowed a test file once.
+/data/
 backtest_results/
 *.parquet
 *.h5
