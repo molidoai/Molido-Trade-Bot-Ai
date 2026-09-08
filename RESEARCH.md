@@ -206,3 +206,80 @@ candidate now survives full costs including swap, and sits on a parameter
 plateau on both axes tested honestly. What it has not survived: the real
 spread (the plateau was measured at 1.2, not 5.0), Monte Carlo, stress
 testing, and the EMA axis re-run. No 🟢 until at least the first of those.
+
+---
+
+# 2026-09-08 (later) — sensitivity complete, and the first risk numbers
+
+## §13/§14 Parameter sensitivity — COMPLETE, 15 of 15 pass
+
+| axis | settings tested | passed | PF range |
+|---|---|---|---|
+| EMA pair (corrected) | 5/13, 7/17, 9/21, 12/26, 15/34, 20/50 | **6/6** | 1.34 – 1.40 |
+| ATR stop | 1.0, 1.5, 2.0, 2.5, 3.0 | **5/5** | 1.23 – 1.50 |
+| Reward ratio | 1.5, 2.0, 3.0, 4.0 | **4/4** | 1.21 – 1.40 |
+
+Every neighbouring setting on every axis clears PF > 1.0 with more than half
+the folds profitable. This is the brief's GREEN FLAG in its strongest form:
+the result is a property of the surface, not of a chosen point.
+
+The corrected EMA axis is worth contrasting with the void one. Buggy, it read
+"1 of 6 pass, PF range 0.00 – 1.38" — a textbook parameter spike, and grounds
+under §13 to reject the candidate outright. Fixed, it reads 6 of 6, PF 1.34 –
+1.40. Same market, same strategy; the entire difference was that the regime
+engine addresses `ema_9`/`ema_21` by name. A test can invert a conclusion.
+
+## §21 Metrics — first complete set, live configuration
+
+XAUUSD H1, out-of-sample trades only, spread 5.0, swap −60/+19, regime gate
+open, $15,000 starting equity — i.e. exactly what the bot is running:
+
+```
+trades 574   PF 1.16   net +1685.2   win rate 29.6%   expectancy +2.94
+avg win +71.4   avg loss −25.9
+MAX DRAWDOWN 5.64%   avg drawdown 1.59%   total return +11.23%
+Sharpe 1.26   Sortino 2.15   Calmar 1.99   Recovery 1.99
+longest losing streak 13   longest winning streak 4
+```
+
+**Max drawdown 5.64% against the prop floor of 10%** — it survives, on this
+path. Three things temper that:
+
+1. It is one ordering of 574 trades. Sequence is luck, and 5.64 against 10 is
+   not a wide margin. §16 Monte Carlo is the test that answers it and is
+   running now.
+2. A 13-trade losing run happened. At 0.25% risk that is ~3.3%, survivable,
+   but it is a real observed streak and not a tail scenario.
+3. A 29.6% win rate means seven trades in ten lose. The edge is entirely in
+   the 2.8:1 ratio of average win to average loss. That is arithmetically
+   sound and psychologically punishing, and the operator should expect it.
+
+## §10 Costs — swap dominates, and it is directional
+
+Measured per lot per night on the live terminals:
+
+| | RoboForex | FundedNext |
+|---|---|---|
+| XAUUSD long | −$60.00 | −$57.94 |
+| XAUUSD short | **+$19.00** | −$15.70 |
+| XAUUSD spread | $9 | $51 |
+| triple-swap day | Wednesday | Wednesday |
+
+One night of long carry costs 6.7x the entire spread, and Wednesday triples
+it to −$180. For a strategy holding tens of hours, financing is the dominant
+cost, not spread — and it is asymmetric by $79/lot/night between directions,
+while the strategy scores both sides identically. Whether the edge survives
+only on the short side is queued as its own test.
+
+FundedNext is structurally worse on both axes at once: 5.7x the spread and a
+short side that pays instead of earning. That is the case against running this
+particular strategy there, and it does not depend on the erroneous 43x claim
+retracted above.
+
+## §24 Verdict
+
+🟡 RESEARCH FURTHER, close to 🟢. Now survives: full costs including swap,
+out-of-sample walk-forward, a complete parameter plateau, and a first
+drawdown measurement inside the prop floor. Still missing: Monte Carlo
+(running), stress testing, and any forward record at all — the bot has yet to
+open its first trade.
