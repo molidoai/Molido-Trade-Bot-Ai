@@ -100,3 +100,95 @@ out-of-sample replication on 4x data. It has not yet survived: full costs
 including the swap that was never charged, parameter perturbation, or Monte
 Carlo. Until those three, the correct label is 🟡 RESEARCH FURTHER, not
 🟢 DEPLOY CANDIDATE.
+
+---
+
+# 2026-09-08 — costs, sensitivity, and two defects in the measurement itself
+
+## §12 Decisive test — COMPLETE (6 rows, XAUUSD TrendFollowing H1)
+
+| # | arm | n | PF | net | folds |
+|---|---|---|---|---|---|
+| 1 | control (published 1.38) | 267 | 1.38 | +1310.7 | 17/22 |
+| 2 | + real overnight financing | 267 | 1.33 | +1162.4 | 14/22 |
+| 3 | + financing + the three brains | 232 | **1.41** | +1187.9 | 15/22 |
+| 4 | + financing, close after 12h | 423 | 1.20 | +761.6 | 15/22 |
+| 5 | + financing, close after 8h | 530 | 1.18 | +761.7 | 13/22 |
+| 6 | + financing, close after 4h | 815 | 1.12 | +580.1 | 11/22 |
+
+Row 1 reproduced the published number exactly, so the harness had not drifted.
+
+Financing costs 0.05 PF and three profitable folds — real, and previously
+uncharged. The brains earn it back and more (1.33 → 1.41) on 35 fewer trades,
+which answers the standing question of whether the filters are worth their
+cost: they are.
+
+Rows 4-6 refute the holding-horizon idea outright. Cutting the hold to avoid
+rollover raises trade count and lowers PF monotonically. The strategy needs to
+hold; paying the swap is cheaper than exiting early.
+
+## §13/§14 Parameter sensitivity — two axes valid, one invalid
+
+**ATR stop, 5 of 5 pass:** 1.0→1.23, 1.5→1.38, 2.0→1.32, 2.5→1.47, 3.0→1.50.
+**Reward ratio, 4 of 4 pass:** 1.5→1.21, 2.0→1.22, 3.0→1.38, 4.0→1.40.
+
+Nine of nine neighbouring settings clear PF>1.0 with more than half the folds
+profitable. That is the brief's GREEN FLAG: a plateau, not a spike. The 1.38
+is one point on a broad surface rather than a fitted maximum.
+
+**The EMA axis result was an artefact and is void.** It reported n=0 for every
+pair except 9/21, which reads exactly like the RED FLAG the brief describes.
+It was a bug in the test: `molido_regime/engine.py:43` addresses `ema_9` and
+`ema_21` by name, so sweeping MultiEMA to other periods removed those keys,
+the regime came back unclassified, and TrendFollowing — which only trades
+Bull/Bear — never entered. Zero trades is not a strategy failing; a fragile
+edge still trades and still loses. Re-running with 9/21 always published for
+the regime engine and the swept pair added on top.
+
+## §10/§11 Costs — the assumption was optimistic by 4x
+
+Live spreads sampled from an open session (RoboForex ECN, median of 12):
+
+| symbol | assumed in every backtest above | measured live |
+|---|---|---|
+| XAUUSD | 1.2 | **5.0** |
+| EURUSD | — | 2.0 |
+
+So every PF above is computed against roughly a quarter of the real spread.
+The numbers are internally comparable but optimistic in absolute terms, and
+the queued studies now read `live_spreads.json` instead.
+
+**FundedNext is a different instrument commercially.** Its XAUUSD spread is
+**52-53 points against RoboForex's 5-6** — the same quote, ten times the toll,
+and about 43x what these backtests assumed. On 267 trades the spread
+difference alone exceeds the entire net profit several times over. The prop
+account is connected and armed at the operator's explicit instruction, with
+its cap raised to 60 and the prop floor armed at 13500, but the arithmetic
+says this strategy cannot pay for that spread. Finding an instrument whose
+cost structure suits that broker is the open question, not tuning this one.
+
+## Defects found in the platform (not the strategy)
+
+1. **The candle cache never expired.** No timestamp, no TTL, no invalidation.
+   Its only reader is the H1 trend filter behind Brain1Setup's hard veto, so
+   the veto was judging live signals against hours-old bars: 30 of 30 XAUUSD
+   entries refused as "against H1 filter (SELL vs BUY)" while the strategy saw
+   a fresh up-cross. This is why the bot had never opened a trade.
+2. **`compute_latest` recomputed every indicator over all history, per bar.**
+   O(n²): one study row took about an hour, which is what made a 15-cell sweep
+   impractical. Now bounded to ten times the longest lookback, proven to
+   produce identical output at 1e-6 and identical study results (267 trades,
+   PF 1.38, +1310.7, 17/22 — unchanged).
+3. **`max_spread_points` was unreachable.** Two different hardcoded caps (20 in
+   risk, 30 in execution) and no setting reached either. Now per account.
+4. **`prop_initial_balance: 0` silently disables the prop loss floor** rather
+   than meaning "no limit". The challenge account was fully configured with
+   its hard protection inert.
+
+## §24 Verdict, updated
+
+Still 🟡 RESEARCH FURTHER, but the case is stronger than yesterday. The
+candidate now survives full costs including swap, and sits on a parameter
+plateau on both axes tested honestly. What it has not survived: the real
+spread (the plateau was measured at 1.2, not 5.0), Monte Carlo, stress
+testing, and the EMA axis re-run. No 🟢 until at least the first of those.
