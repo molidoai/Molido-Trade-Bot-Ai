@@ -83,9 +83,31 @@ class CostModel:
         # points -> price -> account currency
         return -(pts * self.point_size * self.contract_size * abs(volume) * nights)
 
+    # Metals default when the caller has not measured one. 25 points is a
+    # conservative retail gold spread; a raw ECN account quotes 5-6 and a prop
+    # firm 50+, so it is a placeholder, not a fact about any account.
+    XAU_DEFAULT_SPREAD_POINTS = 25.0
+
     def for_symbol(self, symbol: str) -> "CostModel":
+        """This model adjusted for one symbol's contract specification.
+
+        The caller's spread is honoured. It previously was not: any XAU symbol
+        had its spread replaced by a hardcoded 25 regardless of what was passed
+        in, so every gold study silently measured 25 points no matter what its
+        cost model said. Two studies that differed only in spread produced
+        byte-identical results, which is how it was found.
+
+        That mattered in both directions. The published gold numbers were run
+        against 25 points while the live RoboForex quote is 5-6, so the edge
+        was understated by roughly four times the spread, not overstated. And
+        no spread sensitivity study on gold was measuring anything at all.
+        """
         point = 0.01 if ("JPY" in symbol or symbol.startswith("XAU")) else 0.0001
-        spread = 25.0 if symbol.startswith("XAU") else self.spread_points
+        # Only fall back to the metals placeholder when the caller left the
+        # field at its dataclass default, i.e. expressed no opinion.
+        spread = self.spread_points
+        if symbol.startswith("XAU") and spread == CostModel.__dataclass_fields__["spread_points"].default:
+            spread = self.XAU_DEFAULT_SPREAD_POINTS
         return CostModel(
             spread_points=spread,
             slippage_points=self.slippage_points,

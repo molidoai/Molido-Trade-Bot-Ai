@@ -145,7 +145,21 @@ Bull/Bear — never entered. Zero trades is not a strategy failing; a fragile
 edge still trades and still loses. Re-running with 9/21 always published for
 the regime engine and the swept pair added on top.
 
-## §10/§11 Costs — the assumption was optimistic by 4x
+## §10/§11 Costs — CORRECTION: the assumption was *pessimistic*, not optimistic
+
+**This section originally recorded the opposite of the truth and is corrected
+here rather than deleted.** It said the gold studies assumed 1.2 points while
+reality was 5.0, and therefore that every PF above was optimistic. Both halves
+were wrong, because the number those studies passed in was never used:
+`CostModel.for_symbol` replaced the spread of any XAU symbol with a hardcoded
+25 points. The tell was the regime test and decisive row 2 returning identical
+net profit to the decimal while nominally differing in spread.
+
+So every gold result above was measured at **25 points against a live quote of
+5-6** — roughly four times the real cost. The edge is understated, not
+overstated. It also means no spread sensitivity study on gold measured
+anything, and FundedNext's 52 is about twice the tested cost rather than the
+43x claimed below.
 
 Live spreads sampled from an open session (RoboForex ECN, median of 12):
 
