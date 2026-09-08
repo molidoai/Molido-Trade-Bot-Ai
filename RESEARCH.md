@@ -283,3 +283,94 @@ out-of-sample walk-forward, a complete parameter plateau, and a first
 drawdown measurement inside the prop floor. Still missing: Monte Carlo
 (running), stress testing, and any forward record at all — the bot has yet to
 open its first trade.
+
+---
+
+# 2026-09-08 (evening) — first live trade, and the carry surprise
+
+## The bot opened its first position
+
+XAUUSD SELL 0.09 lots at 4391.69, stop 4417.69, target 4313.56 — risk $234
+against a $703 target, the 3R the strategy is built on. It arrived after the
+stale-cache fix removed the veto that had refused every signal, and it sized
+exactly as the risk engine intends: high-volatility regime, 0.25x multiplier,
+$200,000 x 0.5% x 0.25 = $250 budget / $2,600 per lot = 0.09.
+
+## §16 Monte Carlo — COMPLETE (10,000 resamples)
+
+| stress | median dd | p95 | p99 | worst | breaches the 10% floor |
+|---|---|---|---|---|---|
+| reshuffled | 5.67% | 8.87% | 10.59% | 15.82% | **1.81%** |
+| reshuffled, omit 10% | 5.52% | 8.76% | 10.38% | 14.75% | 1.53% |
+| reshuffled, **costs +50%** | 8.26% | 12.40% | 14.24% | 18.43% | **22.25%** |
+| worst 5% dealt first | 15.45% | 17.61% | 19.05% | 22.87% | 100% |
+
+The historical 5.64% was not luck: the resampled median is 5.67%. Sequence
+risk is real but bounded — under two percent of orderings end the challenge.
+
+**The strategy is robust to luck and fragile to cost.** A 50% cost increase
+takes the breach rate from 1.81% to 22.25%. That single row is the most
+decision-relevant number produced all day, and it is what makes the prop
+account's spread a structural problem rather than a preference: FundedNext
+quotes 52 points against RoboForex's 5, which is an order of magnitude past
+the stress that already breaches one run in five.
+
+The last row is a bound, not a probability — dealing the worst 5% of trades
+first is adversarial, not random — but it says plainly that a bad opening run
+ends this challenge, and openings are exactly when a challenge is thinnest.
+
+## §19 Multi-symbol at real measured costs
+
+```
+XAUUSD  267 trades  spread 5.0  PF 1.34  net +1215.8  17/22  PASS
+EURUSD  289 trades  spread 2.0  PF 0.61  net -2477.8   4/22  FAIL
+```
+
+EURUSD is not marginal, it is refuted: it loses twice what gold makes, on
+more trades, in 18 of 22 folds. Gold-only is a measured conclusion.
+
+## The carry result, which inverts the obvious guess
+
+RoboForex charges gold longs 60 points a night and pays shorts 19 — a
+$79/lot/night gap, tripled on Wednesdays, against a $9 spread. Financing, not
+spread, is the dominant cost for a strategy holding tens of hours, and it is
+directional while the strategy is not. The obvious inference was that the
+edge should live on the short side.
+
+Measured out-of-sample with that financing charged:
+
+```
+both sides   267 trades   PF 1.34   net +1215.8   win 33.3%
+BUY only     185 trades   PF 1.53   net +1254.1   win 37.8%
+SELL only     82 trades   PF 0.97   net   -38.3   win 23.2%
+```
+
+The longs carry the entire result **while paying the expensive side of the
+carry**, and the shorts lose money **while being paid to hold**. Whatever the
+edge is, it is not carry, and it is strong enough on the long side to absorb
+$60 a night.
+
+**Held as a hypothesis, not a finding.** The split was chosen after seeing the
+data; 82 short trades at PF 0.97 is not distinguishable from 1.0; and with two
+sides and 22 folds an accident of this size is unremarkable. A fold-level
+consistency check is running before anything is dropped. Worth noting against
+the current live position, which is a short.
+
+## Defect found today, and the reason it nearly cost a conclusion
+
+`BacktestTrade` had no `swap` field. Financing was computed at all three close
+paths and subtracted into `pnl_net`, but never recorded, so the long/short
+study printed "total financing charged: -0.0" and read exactly as though swap
+had not been applied. The conclusion above was nearly discarded over a missing
+dataclass field. Costs that cannot be attributed get re-derived wrongly.
+
+## §24 Verdict
+
+🟡 RESEARCH FURTHER, and now with a forward record of one open trade.
+
+Survives: full costs, out-of-sample walk-forward, a 15-of-15 parameter
+plateau, drawdown inside the prop floor, and Monte Carlo resampling.
+
+Does not yet survive: a cost structure meaningfully worse than RoboForex's,
+which is what the prop account is. Still missing: a forward record of any
+length, and confirmation that the long-side asymmetry is real.
