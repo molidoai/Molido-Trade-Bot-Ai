@@ -58,13 +58,23 @@ sleep 25
 $SSH "$HOST" '
   st=$(docker inspect -f "{{.State.Status}}" molido-engine)
   echo "container: $st"
-  if docker logs molido-engine --since 60s 2>&1 | grep -qiE "Traceback|TypeError|LIVE runner stopped"; then
-    echo "ENGINE IS BROKEN -- the container runs but the runner died:"
-    docker logs molido-engine --tail 15 2>&1 | tail -15
+  # Evidence of life first, and it is decisive. Looking for scary words was
+  # not: "LIVE runner stopped" is logged by the OLD runner on every ordinary
+  # restart, so this reported a perfectly healthy deploy as a dead engine.
+  # A heartbeat in the last 60s means the loop is running now, whatever
+  # appeared in the log while it was coming up.
+  if docker logs molido-engine --since 60s 2>&1 | grep -qE "equity=|session skip|Reconciled"; then
+    echo "runner is cycling: OK"
+    # A crash being retried still cycles, so surface it without failing the
+    # deploy -- one account can be down while another trades.
+    if docker logs molido-engine --since 60s 2>&1 | grep -qiE "Traceback|runner crashed"; then
+      echo "note: an account is erroring while others cycle --"
+      docker logs molido-engine --since 60s 2>&1 | grep -iE "Traceback|runner crashed|MT5 connect failed" | tail -3
+    fi
+  else
+    echo "ENGINE IS BROKEN -- no heartbeat in 60s:"
+    docker logs molido-engine --tail 20 2>&1 | tail -20
     exit 1
   fi
-  docker logs molido-engine --since 60s 2>&1 | grep -qE "session skip|evaluating|Reconciled" \
-    && echo "runner is cycling: OK" \
-    || { echo "no cycle lines in 60s -- check manually"; exit 1; }
 '
 echo "==> deployed"
