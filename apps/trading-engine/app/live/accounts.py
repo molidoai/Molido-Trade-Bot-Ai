@@ -126,6 +126,10 @@ _INHERITED_KEYS = (
     # feed. One global number either blocks every trade on the wide broker or
     # accepts terrible fills on the tight one.
     "max_spread_points",
+    # Which market regimes a strategy may enter in. Opening the gate trades
+    # more and earns more in total, at a thinner profit factor; that balance
+    # is an operator decision, not a property of the code.
+    "allowed_regimes",
     "max_consecutive_losses",
     "consecutive_loss_pause_seconds",
     "session_overlap_only",

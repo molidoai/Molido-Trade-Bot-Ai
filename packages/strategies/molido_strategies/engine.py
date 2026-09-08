@@ -132,8 +132,25 @@ class StrategyEngine:
         if name in self._strategies:
             self._strategies[name].enabled = False
 
-    def configure_live(self, names: list[str] | None = None) -> None:
-        """Register every class; enable only `names` (default TrendFollowing)."""
+    def configure_live(
+        self,
+        names: list[str] | None = None,
+        allowed_regimes: list[str] | None = None,
+    ) -> None:
+        """Register every class; enable only `names` (default TrendFollowing).
+
+        `allowed_regimes`, when given, replaces the regime gate on the enabled
+        strategies. That gate is otherwise a class attribute and could only be
+        changed by editing the strategy, yet it is the single biggest lever on
+        how often the bot trades: measured on XAUUSD H1 walk-forward, opening
+        TrendFollowing to every regime took 267 trades to 574 and net profit
+        from +1162 to +1570, while profit factor fell from 1.33 to 1.15.
+        More money, thinner margin -- an operator's call, not a constant.
+
+        Applied to the instances rather than at construction so it also takes
+        effect on a live reconfigure, where the objects already exist and
+        add_from_registry is skipped.
+        """
         enabled = parse_strategy_names(names)
         for key in STRATEGY_REGISTRY:
             if key not in self._strategies:
@@ -142,6 +159,12 @@ class StrategyEngine:
                 self.enable(key)
             else:
                 self.disable(key)
+        if allowed_regimes:
+            regimes = [str(r) for r in allowed_regimes]
+            for key in enabled:
+                strat = self._strategies.get(key)
+                if strat is not None:
+                    strat.allowed_regimes = list(regimes)
 
     def list_strategies(self) -> list[dict[str, Any]]:
         return [

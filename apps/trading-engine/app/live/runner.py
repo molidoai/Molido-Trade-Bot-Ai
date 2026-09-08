@@ -329,7 +329,8 @@ class LiveRunner:
         self.indicators = _build_indicators(acc_settings)
 
         self.strategies = StrategyEngine()
-        self.strategies.configure_live(parse_strategy_names(account.strategy_names))
+        self.strategies.configure_live(parse_strategy_names(account.strategy_names),
+                                      allowed_regimes=acc_settings.get("allowed_regimes"))
 
         self._explicit_entry_cap = _int_or_none(acc_settings.get("max_entries_per_day"))
         self._explicit_position_cap = _int_or_none(acc_settings.get("max_open_positions"))
@@ -523,7 +524,10 @@ class LiveRunner:
             self.portfolio.account_mode = self.account_mode
         if self.market_data is not None:
             self.market_data.symbols = self.symbols
-        self.strategies.configure_live(parse_strategy_names(acc.strategy_names))
+        # settings, not rt: it is the per-account merged view, so an account
+        # that overrides the regime gate keeps its own value here.
+        self.strategies.configure_live(parse_strategy_names(acc.strategy_names),
+                                       allowed_regimes=settings.get("allowed_regimes"))
 
     def _mt5_creds(self, rt: dict) -> tuple[int | None, str, str, str | None]:
         acc = self._resolve_account(rt)
