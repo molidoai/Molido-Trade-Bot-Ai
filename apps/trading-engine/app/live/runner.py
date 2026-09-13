@@ -528,6 +528,12 @@ class LiveRunner:
         # that overrides the regime gate keeps its own value here.
         self.strategies.configure_live(parse_strategy_names(acc.strategy_names),
                                        allowed_regimes=settings.get("allowed_regimes"))
+        # Exit management follows the tested exits unless explicitly asked
+        # otherwise; see TradeManager.scale_out for the measurement.
+        tm = getattr(self, "trade_manager", None)
+        if tm is not None:
+            tm.scale_out = str(settings.get("scale_out_at_1r", False)).strip().lower() in (
+                "1", "true", "yes", "on")
 
     def _mt5_creds(self, rt: dict) -> tuple[int | None, str, str, str | None]:
         acc = self._resolve_account(rt)

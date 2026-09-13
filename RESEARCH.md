@@ -410,3 +410,25 @@ fixed stop and a 3R target. In the first live week two winners reached
 
 The backtester now has `live_management=True`, mirroring TradeManager, so the
 validated exits and the live exits can be compared on identical signals.
+
+## Result: the live exits fail the acceptance bar
+
+Identical signals, live configuration (open regime gate, the three brains,
+spread 5.0, swap −60/+19), XAUUSD H1 walk-forward, out-of-sample only. Only
+exit management differs:
+
+| exits | trades | PF | net | win | profitable folds |
+|---|---|---|---|---|---|
+| fixed stop, 3R target (tested) | 380 | **1.27** | **+1343.1** | 32.4% | **15/22** |
+| BE + half at 1R + 1.5 ATR trail (live) | 474 | 1.18 | +795.1 | 27.0% | **10/22** |
+
+The management that was trading live **loses 41% of the net and drops to 10
+of 22 profitable folds — below the "more than half" bar every candidate has
+had to clear.** It trades more (474 vs 380) because early exits free the
+single position slot sooner, and each extra trade is weaker: moving the stop
+to entry turns winners that would have run into break-even exits that lose
+the spread, and banking half at 1R caps exactly the tail the strategy's
+3:1 payoff depends on.
+
+The validated edge exists only with the tested exits. Live management is to
+follow them.

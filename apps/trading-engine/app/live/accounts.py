@@ -130,6 +130,9 @@ _INHERITED_KEYS = (
     # more and earns more in total, at a thinner profit factor; that balance
     # is an operator decision, not a property of the code.
     "allowed_regimes",
+    # Break-even + half at 1R + trail. Off by default because it measured
+    # worse than the tested fixed exits; kept settable, not deleted.
+    "scale_out_at_1r",
     "max_consecutive_losses",
     "consecutive_loss_pause_seconds",
     "session_overlap_only",
