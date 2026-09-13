@@ -63,6 +63,7 @@ class BacktestEngine:
         max_hold_bars: int = 0,
         brain: object | None = None,
         live_management: bool = False,
+        breakeven_at_r: float = 0.0,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -89,6 +90,15 @@ class BacktestEngine:
         # winners reached +1.93R and +2.04R and banked about +0.9R each.
         # True mirrors TradeManager so the two can be compared.
         self.live_management = live_management
+        # A gentler rule than live_management, for testing on its own: move the
+        # stop to entry once price has run breakeven_at_r × the initial risk,
+        # with no partial close and no trail. The 1R scale-out measured worse
+        # than a fixed stop (PF 1.18 vs 1.27, 10/22 vs 15/22 folds) because it
+        # stopped out winners that would have reached 3R; a later break-even
+        # trigger keeps more of that tail while still protecting a trade that
+        # has gone most of the way. 0 disables it. Ignored when
+        # live_management is on, which already moves the stop at 1R.
+        self.breakeven_at_r = breakeven_at_r
         self._regime_engine = None
 
     def run(
@@ -159,8 +169,8 @@ class BacktestEngine:
                     open_pos = None
 
             # --- Live trade management, applied after this bar's exit check ---
-            if (open_pos is not None and self.live_management
-                    and open_pos.initial_stop_dist > 0):
+            if (open_pos is not None and open_pos.initial_stop_dist > 0
+                    and (self.live_management or self.breakeven_at_r > 0)):
                 self._manage_like_live(open_pos, bar, window, cost, symbol)
 
             # --- Time exit: the measured horizon has run out ---
@@ -430,6 +440,16 @@ class BacktestEngine:
         """
         d = pos.initial_stop_dist
         buy = pos.side == "BUY"
+
+        if not self.live_management:
+            # Break-even only: one stop move at breakeven_at_r, nothing else.
+            trigger = pos.entry_price + d * self.breakeven_at_r if buy \
+                else pos.entry_price - d * self.breakeven_at_r
+            if not pos.be_done and (bar.high >= trigger if buy else bar.low <= trigger):
+                pos.stop_loss = pos.entry_price
+                pos.be_done = True
+            return
+
         one_r = pos.entry_price + d if buy else pos.entry_price - d
         reached = bar.high >= one_r if buy else bar.low <= one_r
 
