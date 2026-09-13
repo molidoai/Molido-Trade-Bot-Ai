@@ -29,6 +29,19 @@ class TradeManager:
         self.strategies = strategies
         self._journal = journal
         self._state: dict[str, dict[str, Any]] = {}
+        # Break-even at +1R, close half, trail the rest. Off by default.
+        #
+        # Walk-forward on identical signals in the live configuration
+        # (XAUUSD H1, open regime gate, brains, real spread and swap):
+        #   fixed stop, 3R target     380 trades  PF 1.27  +1343  15/22 folds
+        #   this scale-out            474 trades  PF 1.18   +795  10/22 folds
+        # The scale-out gives up 41% of the net and falls below the "more than
+        # half the folds" bar. Moving the stop to entry turns winners that
+        # would have run into break-even exits that lose the spread, and
+        # banking half at 1R caps the tail the strategy's 3:1 payoff needs.
+        # It was on in live while every published result assumed it was not.
+        # Set per cycle from the runtime setting scale_out_at_1r.
+        self.scale_out: bool = False
 
     def _st(self, pos) -> dict[str, Any]:
         ticket = str(pos.ticket)
@@ -109,7 +122,7 @@ class TradeManager:
                 continue
 
             # 1+2. At +1R: break-even SL to entry, partial close 50%
-            if r >= 1.0 and not st["be_done"]:
+            if self.scale_out and r >= 1.0 and not st["be_done"]:
                 ok = await self.broker.modify_position(pos.ticket, sl=pos.entry_price, tp=pos.take_profit)
                 if ok:
                     st["be_done"] = True
@@ -118,7 +131,7 @@ class TradeManager:
                 else:
                     logger.warning("BE modify failed ticket=%s", pos.ticket)
 
-            if r >= 1.0 and not st["partial_done"] and pos.volume > 0:
+            if self.scale_out and r >= 1.0 and not st["partial_done"] and pos.volume > 0:
                 half = round(pos.volume * 0.5, 2)
                 min_lot = 0.01
                 if half >= min_lot and pos.volume - half >= min_lot:
@@ -132,7 +145,7 @@ class TradeManager:
                         logger.warning("Partial close failed ticket=%s %s", pos.ticket, getattr(res, "message", res))
 
             # Remainder ATR trail after partial: BUY SL = close - 1.5*ATR
-            if st["partial_done"] and atr and atr > 0:
+            if self.scale_out and st["partial_done"] and atr and atr > 0:
                 side = pos.side.upper()
                 if side == "BUY":
                     new_sl = price - 1.5 * atr

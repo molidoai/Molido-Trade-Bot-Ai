@@ -121,6 +121,18 @@ _INHERITED_KEYS = (
     "max_drawdown",
     "max_open_positions",
     "max_entries_per_day",
+    # Broker-specific, so it has to be overridable per account: the same gold
+    # quote is ~2 points on a raw-spread ECN account and ~70 on a prop firm's
+    # feed. One global number either blocks every trade on the wide broker or
+    # accepts terrible fills on the tight one.
+    "max_spread_points",
+    # Which market regimes a strategy may enter in. Opening the gate trades
+    # more and earns more in total, at a thinner profit factor; that balance
+    # is an operator decision, not a property of the code.
+    "allowed_regimes",
+    # Break-even + half at 1R + trail. Off by default because it measured
+    # worse than the tested fixed exits; kept settable, not deleted.
+    "scale_out_at_1r",
     "max_consecutive_losses",
     "consecutive_loss_pause_seconds",
     "session_overlap_only",

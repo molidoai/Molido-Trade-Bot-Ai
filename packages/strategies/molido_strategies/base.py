@@ -80,6 +80,16 @@ class Strategy(ABC):
         self.params = params
         self.enabled: bool = True
         self._last_signal_bar_time: datetime | None = None
+        # A strategy's regime gate is a class attribute, so it could only be
+        # changed by editing the strategy. Measured on XAUUSD H1 walk-forward,
+        # opening TrendFollowing to every regime more than doubled the trade
+        # count (267 -> 574) and raised net profit 35% (+1162 -> +1570) while
+        # dropping PF from 1.33 to 1.15 -- a real trade-off with no single
+        # right answer, which is exactly the kind of thing that belongs in
+        # configuration rather than in the class body.
+        override = params.get("allowed_regimes")
+        if override:
+            self.allowed_regimes = [str(r) for r in override]
 
     @abstractmethod
     def evaluate(self, ctx: StrategyContext) -> StrategySignal:

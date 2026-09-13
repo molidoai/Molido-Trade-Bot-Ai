@@ -280,10 +280,35 @@ class RiskEngine:
         lot_size = self._normalize_lot(raw_lots, limits)
 
         if lot_size < limits.min_lot_size:
-            return self._deny(
-                f"Calculated lot {lot_size:.4f} below minimum {limits.min_lot_size}",
-                checks,
-            )
+            # A soft size reducer can price a small account out of the market
+            # completely. On a $15,000 account at 0.5% risk, a 26-point gold
+            # stop needs 0.029 lots; the high-volatility multiplier cuts the
+            # budget to a quarter and asks for 0.007, while the broker will
+            # not fill less than 0.01. No size exists in between, so every
+            # signal was refused -- the prop account took zero trades in a
+            # session where the same signals filled fine on the larger one.
+            #
+            # Fall back to the broker's minimum, but only when the FULL
+            # configured budget covers its risk. The operator's risk_per_trade
+            # is a hard limit and still holds; it is the volatility reduction,
+            # which is a preference, that yields. An account too small for the
+            # minimum lot even at full risk is still refused, which is the
+            # honest answer for a $971 account facing a $26 minimum.
+            full_budget = account.equity * limits.risk_per_trade
+            min_lot_risk = limits.min_lot_size * risk_per_lot
+            if risk_mult < 1.0 and min_lot_risk <= full_budget:
+                lot_size = limits.min_lot_size
+                risk_amount = min_lot_risk
+                reasons.append(
+                    f"Reduced size {raw_lots:.4f} is below the broker minimum; "
+                    f"taking {limits.min_lot_size} at {min_lot_risk / account.equity * 100:.2f}% "
+                    f"of equity, inside the {limits.risk_per_trade * 100:.2f}% limit"
+                )
+            else:
+                return self._deny(
+                    f"Calculated lot {lot_size:.4f} below minimum {limits.min_lot_size}",
+                    checks,
+                )
 
         symbol_risk = risk_amount
         current_symbol = account.symbol_exposure.get(ctx.symbol, 0.0)

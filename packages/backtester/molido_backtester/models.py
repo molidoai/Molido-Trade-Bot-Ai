@@ -21,6 +21,11 @@ class BacktestTrade:
     pnl_net: float = 0.0          # after costs
     commission: float = 0.0
     slippage_cost: float = 0.0
+    # Overnight financing charged for this trade, as a positive cost. It was
+    # already subtracted into pnl_net but never recorded, so no study could
+    # attribute it -- a long/short comparison reported "financing charged:
+    # -0.0" and read as if swap had not been applied at all, when it had.
+    swap: float = 0.0
     strategy: str = ""
     exit_reason: str = ""
     bars_held: int = 0

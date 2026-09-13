@@ -149,3 +149,25 @@ def test_a_stop_hit_on_the_expiry_bar_still_counts_as_a_stop():
     first = res.trades[0]
     assert first.bars_held == 5
     assert first.exit_reason == "SL", "the time exit must not rescue a stopped trade"
+
+
+def test_zero_defers_to_the_strategy_rather_than_meaning_none():
+    """0 is 'defer', not 'no horizon'.
+
+    A study that passed 0 expecting no time exit got the strategy's own 32-bar
+    default instead, which made its control row identical to the row it was
+    controlling. Pin the real meaning so nobody reads 0 as 'off' again.
+    """
+    res = _run(hold_on_strategy=10, engine_override=0)
+    timed = [t for t in res.trades if t.exit_reason == "time"]
+    assert timed, "0 must fall through to the strategy's own horizon"
+    assert all(t.bars_held == 10 for t in timed)
+
+
+def test_negative_means_explicitly_no_horizon():
+    """The way to actually ask for no time exit, which 0 could not express."""
+    res = _run(hold_on_strategy=10, engine_override=-1)
+    assert not [t for t in res.trades if t.exit_reason == "time"], \
+        "a negative override must disable the horizon outright"
+    assert len(res.trades) == 1
+    assert res.trades[0].exit_reason == "end_of_data"

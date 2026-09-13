@@ -1,17 +1,66 @@
-FROM node:20-alpine
+# Multi-stage, because next.config.js sets output:"standalone" and the previous
+# single stage then ran `npm start`. Next warns that combination is unsupported
+# ("next start does not work with output: standalone") on every boot -- it only
+# appeared to work because the image still carried the whole builder: full
+# node_modules, the build cache, and the sources.
+#
+# That matters on this host beyond tidiness. The root volume has filled before
+# and took sshd and nginx down with it, in a way that survived reboots and cost
+# three of them. Shipping a runtime image instead of a builder image is a large
+# share of that risk removed.
+#
+# The standalone bundle carries only the modules actually imported, so the
+# runner stage needs no npm install and no package.json.
 
+# ---------- deps ----------
+FROM node:20-alpine AS deps
 WORKDIR /app
-
 COPY frontend/package.json ./
-RUN npm install
+# package-lock.json is optional here; npm install handles both cases.
+RUN npm install --no-audit --no-fund
 
+# ---------- build ----------
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
 COPY frontend .
 
-ARG NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+# Relative, not absolute: Next inlines NEXT_PUBLIC_* into the client bundle at
+# BUILD time, so an absolute localhost URL would mean the visitor's own machine.
+ARG NEXT_PUBLIC_API_URL=/api/v1
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
 RUN npm run build
 
+# ---------- run ----------
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV PORT=3000
+# Without this the server binds loopback inside the container and nothing
+# outside it -- including nginx -- can reach the port.
+ENV HOSTNAME=0.0.0.0
+
+# Not root. The container serves the public internet through nginx.
+RUN addgroup -g 1001 -S nodejs && adduser -u 1001 -S nextjs -G nodejs
+
+# The three pieces standalone output expects, and nothing else. static/ and
+# public/ are deliberately not inside the bundle and must be placed by hand.
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+
+USER nextjs
 EXPOSE 3000
-CMD ["npm", "start"]
+
+# Hits the app's own root, not /api/health -- that path belongs to the FastAPI
+# service behind nginx, and this container would have reported itself unhealthy
+# forever while serving pages perfectly well. "/" answers 307 (redirect to
+# login), so anything under 500 counts as the server being up.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD node -e "require('http').get({host:'127.0.0.1',port:3000,path:'/',timeout:4000},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+
+CMD ["node", "server.js"]

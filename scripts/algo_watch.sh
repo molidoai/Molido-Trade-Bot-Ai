@@ -88,29 +88,34 @@ case "$state" in
     # more likely to work and each one clicks inside a live trading window --
     # past that point the honest move is to stop and ask for a human.
     n=0; [ -f "$TRIES" ] && n=$(cat "$TRIES" 2>/dev/null || echo 0)
-    # Each terminal lives on its own X display, and driving the wrong one
-    # sends synthetic clicks into a different account's live trading window.
-    # The repair therefore takes the display as an argument and the mapping
-    # from bridge port to display is explicit here -- a default would be a
-    # guess, and a wrong guess clicks inside someone's open positions.
+    # Each bridge port maps to the display and window its terminal owns, so a
+    # repair can never send synthetic clicks into a different account's
+    # trading window. enable-algo.sh is pinned to :99; enable-algo-any.sh
+    # takes a display and a window name, reads each checkbox before touching
+    # it, and clicks only what is in the wrong state.
+    #
+    # Account 2 was previously reported and never repaired, which meant the
+    # only account that actually trades had no automatic repair at all: on
+    # 2026-09-07 a terminal restart left trade_allowed off and it stayed off.
     case "$PORT_ONE" in
-      8001) DISP=":99";  HINT="MetaQuotes-Demo" ;;
-      8002) DISP=":100"; HINT="" ;;
-      *)    DISP="";     HINT="" ;;
+      8001) REPAIR="/opt/mt5/enable-algo.sh" ;;
+      8002) REPAIR="/opt/mt5/enable-algo-any.sh :100 RoboForex-ECN" ;;
+      8003) REPAIR="/opt/mt5/enable-algo-any.sh :102 FundedNext" ;;
+      *)    REPAIR="" ;;
     esac
-    if [ -z "$DISP" ]; then
-      msg="⚠️ Molido: Algo Trading روی ترمینال پورت $PORT_ONE خاموش است، ولی نمایشگر این ترمینال شناخته‌شده نیست. باید دستی روشن شود."
-    elif [ "$n" -lt "$MAX_TRIES" ] && [ -x /opt/mt5/enable-algo.sh ]; then
+    if [ -z "$REPAIR" ]; then
+      msg="⚠️ Molido: Algo Trading روی ترمینال پورت $PORT_ONE خاموش است. تعمیر خودکار برای این ترمینال وجود ندارد و باید دستی روشن شود."
+    elif [ "$n" -lt "$MAX_TRIES" ] && [ -x "${REPAIR%% *}" ]; then
       echo $((n + 1)) > "$TRIES"
-      logger -t molido-algo-watch "port $PORT_ONE ($DISP) trade_allowed off; attempt $((n+1))/$MAX_TRIES"
-      timeout 180 /opt/mt5/enable-algo.sh "$DISP" "$HINT" >/tmp/algo-repair-$PORT_ONE.log 2>&1 || true
+      logger -t molido-algo-watch "trade_allowed is off on $PORT_ONE; attempt $((n+1))/$MAX_TRIES via $REPAIR"
+      timeout 180 $REPAIR >/tmp/algo-repair.log 2>&1 || true
       # The script's own output is not evidence: it reports clicks, not state.
       # Ask the terminal what it actually thinks now.
       after=$(probe "$PORT_ONE")
       if [ "${after:-off}" = "on" ]; then
         logger -t molido-algo-watch "repaired: trade_allowed is on again"
         rm -f "$stamp" "$TRIES"
-        python3 - "🔧 Molido: Algo Trading روی ترمینال پورت $PORT_ONE خاموش شده بود و خودکار روشن شد. معاملات از سر گرفته می‌شود." <<'SEND'
+        python3 - "🔧 Molido: Algo Trading در ترمینال خاموش شده بود و خودکار روشن شد. معاملات از سر گرفته می‌شود." <<'SEND'
 import json, sys, urllib.parse, urllib.request
 p = "/var/lib/docker/volumes/molido_runtime_data/_data/runtime-settings.json"
 try:

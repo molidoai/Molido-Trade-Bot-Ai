@@ -13,6 +13,7 @@ Responsibilities (from Master Prompt section 4):
 from __future__ import annotations
 import asyncio
 import logging
+import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Awaitable
@@ -38,7 +39,11 @@ class MarketDataEngine:
         self._tick_history: dict[str, deque[Tick]] = defaultdict(
             lambda: deque(maxlen=max_tick_history)
         )
-        self._candle_cache: dict[tuple[str, TimeFrame], list[Candle]] = {}
+        # (bars, monotonic timestamp of the fetch). The timestamp is the whole
+        # point: without it this cache had no expiry at all, so the first fetch
+        # of a (symbol, timeframe) was served back unchanged for the life of
+        # the process. See _cache_ttl for why that mattered.
+        self._candle_cache: dict[tuple[str, TimeFrame], tuple[list[Candle], float]] = {}
         self._running = False
         self._stream_task: asyncio.Task | None = None
         self._subscribers: list[Callable[[Tick], Awaitable[None]]] = []
@@ -87,10 +92,13 @@ class MarketDataEngine:
         use_cache: bool = True,
     ) -> list[Candle]:
         key = (symbol, timeframe)
-        if use_cache and key in self._candle_cache:
-            cached = self._candle_cache[key]
-            if len(cached) >= count:
-                return cached[-count:]
+        if use_cache:
+            hit = self._candle_cache.get(key)
+            if hit is not None:
+                cached, fetched_at = hit
+                fresh = (time.monotonic() - fetched_at) < self._cache_ttl(timeframe)
+                if fresh and len(cached) >= count:
+                    return cached[-count:]
 
         candles = await self.broker.get_candles(symbol, timeframe, count=count)
         # Basic validation: drop candles with bad OHLC
@@ -99,8 +107,37 @@ class MarketDataEngine:
             if c.high >= c.low and c.high >= c.open and c.high >= c.close
             and c.low <= c.open and c.low <= c.close
         ]
-        self._candle_cache[key] = valid
+        self._candle_cache[key] = (valid, time.monotonic())
         return valid[-count:] if count else valid
+
+    @staticmethod
+    def _cache_ttl(timeframe: TimeFrame) -> float:
+        """How long a cached series may be reused.
+
+        This cache previously never expired. Nothing checked an age and nothing
+        invalidated on a bar close, so once a (symbol, timeframe) series was
+        stored it was returned forever; it only ever appeared to work because
+        the strategy path fetches with use_cache=False and overwrites the entry
+        as a side effect. Any symbol the picker skipped kept its first-ever
+        bars indefinitely.
+
+        That is not cosmetic. The only reader of the cache is the H1 trend
+        filter behind Brain1Setup's hard veto, so a frozen series meant the
+        veto was judging live signals against a stale trend direction -- which
+        is what blocked every XAUUSD entry on 2026-09-07: the strategy saw a
+        fresh EMA9/21 up-cross and the filter was still holding pre-cross bars,
+        so 30 of 30 BUY signals were vetoed as "against H1 filter (SELL)".
+
+        The cache exists to stop the same series being pulled several times
+        within one 15s cycle, and a short bound keeps that benefit while making
+        a stale read impossible. Scaled to the bar size, floored so the very
+        fast timeframes cannot serve a bar that has already closed.
+        """
+        seconds = {
+            TimeFrame.M1: 60.0, TimeFrame.M5: 300.0, TimeFrame.M15: 900.0,
+            TimeFrame.H1: 3600.0, TimeFrame.H4: 14400.0, TimeFrame.D1: 86400.0,
+        }.get(timeframe, 900.0)
+        return min(30.0, max(5.0, seconds / 20.0))
 
     def is_data_fresh(self, symbol: str | None = None) -> bool:
         if symbol:

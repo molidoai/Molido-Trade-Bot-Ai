@@ -1,41 +1,30 @@
 "use client";
 
-import { useRef } from "react";
+/**
+ * A panel.
+ *
+ * This used to tilt in 3D under the cursor: a mousemove handler on every card,
+ * writing rotateX/rotateY transforms, over a page with `perspective: 1400px`
+ * on the body. Fifteen pages use it, so a dashboard with a dozen cards ran a
+ * dozen handlers competing for the main thread during exactly the interaction
+ * where scrolling needs to stay smooth. It also moved the thing you were
+ * trying to read.
+ *
+ * The name and props are kept so no page has to change.
+ */
+
+import type { ReactNode } from "react";
 
 export function TiltCard({
   children,
   className = "",
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   className?: string;
+  /** Accepted and ignored — kept so existing callers still type-check. */
+  intensity?: number;
 }) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  const onMove = (e: React.MouseEvent) => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const x = (e.clientX - r.left) / r.width - 0.5;
-    const y = (e.clientY - r.top) / r.height - 0.5;
-    el.style.transform = `rotateY(${x * -12}deg) rotateX(${y * 10}deg) translateZ(12px)`;
-  };
-
-  const onLeave = () => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.transform = "rotateY(0deg) rotateX(0deg) translateZ(0)";
-  };
-
-  return (
-    <div style={{ perspective: 900 }} className={className}>
-      <div
-        ref={ref}
-        onMouseMove={onMove}
-        onMouseLeave={onLeave}
-        className="glass h-full rounded-2xl p-5 transition-transform duration-200 ease-out will-change-transform"
-      >
-        {children}
-      </div>
-    </div>
-  );
+  return <div className={`panel p-4 sm:p-5 ${className}`}>{children}</div>;
 }
+
+export default TiltCard;

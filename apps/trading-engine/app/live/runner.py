@@ -238,6 +238,30 @@ def _post_heartbeat() -> None:
 DATA_DIR = os.path.dirname(os.getenv("RUNTIME_SETTINGS_PATH", "/app/data/runtime-settings.json")) or "/app/data"
 
 
+def _default_timeframe(tf_override) -> TimeFrame:
+    """The bar size to fall back to when a position's own is unknown.
+
+    M15 was hardcoded here, so pinning an account to H1 moved entries but left
+    management on M15 -- half a switch, and the half that decides when to exit
+    stayed behind. An explicit setting now governs both; "auto" still means
+    M15, which is what the auto sweep opens on.
+    """
+    if tf_override and not is_auto_timeframe(tf_override):
+        raw = str(tf_override).strip()
+        # Settings say "H1"; the enum's *value* is "1h". Looking up only one of
+        # the two makes every explicit setting fall through to the default --
+        # which is the bug this function exists to fix, so accept both.
+        try:
+            return TimeFrame[raw.upper()]
+        except KeyError:
+            pass
+        try:
+            return TimeFrame(raw.lower())
+        except ValueError:
+            pass
+    return TimeFrame.M15
+
+
 class LiveRunner:
     """Trades exactly one broker account.
 
@@ -264,7 +288,7 @@ class LiveRunner:
         acc_settings = account.settings or rt
         self.tf_override = account.timeframe
         self.symbols = resolve_universe(account.symbols)
-        self.timeframe = TimeFrame.M15
+        self.timeframe = _default_timeframe(self.tf_override)
         self.picker = UniversePicker()
         self.cycle_seconds = cycle_seconds
         self.account_mode = account.account_mode
@@ -305,7 +329,8 @@ class LiveRunner:
         self.indicators = _build_indicators(acc_settings)
 
         self.strategies = StrategyEngine()
-        self.strategies.configure_live(parse_strategy_names(account.strategy_names))
+        self.strategies.configure_live(parse_strategy_names(account.strategy_names),
+                                      allowed_regimes=acc_settings.get("allowed_regimes"))
 
         self._explicit_entry_cap = _int_or_none(acc_settings.get("max_entries_per_day"))
         self._explicit_position_cap = _int_or_none(acc_settings.get("max_open_positions"))
@@ -407,6 +432,13 @@ class LiveRunner:
             ),
             max_drawdown=num("max_drawdown", 0.04),
             max_open_positions=max(1, max_pos),
+            # The widest spread an entry may pay, in points. Two separate caps
+            # used to exist -- RiskLimits' 20 and ExecutionEngine's 30 -- and
+            # neither could be configured, so the effective limit was a
+            # hardcoded 30 that no setting could reach. Both now come from
+            # here, per account, because brokers differ by more than the gap
+            # between those two numbers.
+            max_spread_points=num("max_spread_points", base.max_spread_points),
             # Prop-challenge backstop; 0 (the default) leaves it off.
             prop_initial_balance=num("prop_initial_balance", 0.0),
             prop_max_loss_pct=num("prop_max_loss_pct", base.prop_max_loss_pct),
@@ -429,7 +461,7 @@ class LiveRunner:
         self.account_mode = acc.account_mode
         self.tf_override = acc.timeframe
         self.symbols = resolve_universe(acc.symbols)
-        self.timeframe = TimeFrame.M15
+        self.timeframe = _default_timeframe(self.tf_override)
         if "master_bot_enabled" in settings:
             self.master_bot_on = bool(settings.get("master_bot_enabled"))
         overlap_only = _overlap_only(settings)
@@ -492,7 +524,16 @@ class LiveRunner:
             self.portfolio.account_mode = self.account_mode
         if self.market_data is not None:
             self.market_data.symbols = self.symbols
-        self.strategies.configure_live(parse_strategy_names(acc.strategy_names))
+        # settings, not rt: it is the per-account merged view, so an account
+        # that overrides the regime gate keeps its own value here.
+        self.strategies.configure_live(parse_strategy_names(acc.strategy_names),
+                                       allowed_regimes=settings.get("allowed_regimes"))
+        # Exit management follows the tested exits unless explicitly asked
+        # otherwise; see TradeManager.scale_out for the measurement.
+        tm = getattr(self, "trade_manager", None)
+        if tm is not None:
+            tm.scale_out = str(settings.get("scale_out_at_1r", False)).strip().lower() in (
+                "1", "true", "yes", "on")
 
     def _mt5_creds(self, rt: dict) -> tuple[int | None, str, str, str | None]:
         acc = self._resolve_account(rt)
@@ -503,7 +544,11 @@ class LiveRunner:
             BrokerType.MT5, login=login, password=password, server=server, path=path,
             rpc_host=self.account.rpc_host, rpc_port=self.account.rpc_port,
         )
-        self.execution = ExecutionEngine(self.broker)
+        # Same cap the risk engine uses. Left at its own default, the
+        # execution engine silently applied 30 points to every account.
+        self.execution = ExecutionEngine(
+            self.broker, max_spread_points=self.risk.limits.max_spread_points
+        )
         self.positions = PositionManager(self.broker)
         self.portfolio = PortfolioManager(self.broker, self.positions, account_mode=self.account_mode)
         self.reconciler = Reconciler(self.broker, self.positions)
@@ -991,12 +1036,40 @@ class LiveRunner:
             logger.warning("%s exec failed: %s", symbol, result.exec_result.message)
         return False
 
+    def _position_timeframe(self, symbol: str) -> TimeFrame:
+        """The bar size the open position on this symbol was entered on.
+
+        Falls back to the configured timeframe when the journal has no record
+        -- positions opened before this was tracked, or a broker position the
+        engine did not open itself.
+        """
+        try:
+            by_ticket = self.journal.timeframe_by_ticket()
+        except Exception:
+            return self.timeframe
+        for pos in (self.positions.by_symbol(symbol) if self.positions else []):
+            raw = by_ticket.get(str(getattr(pos, "ticket", "")))
+            if not raw:
+                continue
+            try:
+                return TimeFrame(raw)
+            except ValueError:
+                continue
+        return self.timeframe
+
     async def _manage_open(self, symbol: str) -> None:
         if self.trade_manager is None or self.positions is None:
             return
         if self.positions.by_symbol(symbol) == []:
             return
-        raw = await self.market_data.get_candles(symbol, self.timeframe, count=40)
+        # Manage each position on the bar size it was opened on. self.timeframe
+        # is fixed at M15 while entries are swept across M15 and M5 (or pinned
+        # by tf_override), so using it here managed an M5 entry on M15 bars --
+        # and the holding horizon counts bars, which made the horizon wrong by
+        # the ratio between them. Positions opened before the timeframe was
+        # journalled have no entry and keep the configured default.
+        tf = self._position_timeframe(symbol)
+        raw = await self.market_data.get_candles(symbol, tf, count=40)
         try:
             candles = closed_bars(raw, as_of=self._broker_now(), min_bars=8) if raw else []
         except InsufficientDataError:
@@ -1015,7 +1088,7 @@ class LiveRunner:
         for pos in self.positions.by_symbol(symbol):
             st = self.trade_manager._st(pos)
             self.journal.update_mae_mfe(pos.ticket, price=price, entry=pos.entry_price, side=pos.side, stop_distance=st.get("stop_dist"))
-        await self.trade_manager.manage_symbol(symbol, candles=candles, atr=atr, timeframe=self.timeframe, price=price)
+        await self.trade_manager.manage_symbol(symbol, candles=candles, atr=atr, timeframe=tf, price=price)
         await self.positions.sync_from_broker()
 
 

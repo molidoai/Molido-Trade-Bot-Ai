@@ -8,6 +8,7 @@ Event-driven Backtester (Master Prompt §18).
 """
 
 from __future__ import annotations
+import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -16,6 +17,8 @@ from typing import Sequence, Any
 from molido_shared.types import Candle, TimeFrame
 from molido_indicators.engine import IndicatorEngine
 from molido_strategies.engine import StrategyEngine
+
+logger = logging.getLogger(__name__)
 from molido_strategies.base import SignalSide
 from molido_backtester.models import BacktestTrade, BacktestMetrics, BacktestResult
 from molido_backtester.costs import CostModel
@@ -38,6 +41,13 @@ class _OpenPos:
     # the horizon its own strategy declared rather than on one global number
     # applied to strategies that never asked for it. 0 means no time exit.
     max_hold_bars: int = 0
+    # Live trade management state (see BacktestEngine.live_management).
+    initial_stop_dist: float = 0.0
+    be_done: bool = False
+    partial_done: bool = False
+    # Net P&L already banked by a partial close, added to the final record so
+    # one position stays one trade and trade counts remain comparable.
+    realized_net: float = 0.0
 
 
 class BacktestEngine:
@@ -51,6 +61,9 @@ class BacktestEngine:
         max_open: int = 1,
         min_risk_reward: float = 0.0,
         max_hold_bars: int = 0,
+        brain: object | None = None,
+        live_management: bool = False,
+        breakeven_at_r: float = 0.0,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -62,6 +75,30 @@ class BacktestEngine:
         # An override for studies that sweep the holding horizon. 0 defers to
         # whatever each strategy declares for itself.
         self.max_hold_bars = max_hold_bars
+        # The live path runs every signal past DecisionBrain before sizing it,
+        # and the brain vetoes the large majority: 7,291 of 9,196 recorded
+        # vetoes came from this layer, against 264 accepts. A backtest without
+        # it measures the strategy, not the bot -- so its profit factor
+        # describes roughly thirty times more trades than the bot would take,
+        # chosen differently. Pass a brain to measure what actually runs.
+        self.brain = brain
+        # The live bot does not hold to a fixed stop and target. TradeManager
+        # moves the stop to entry and closes half at +1R, then trails the rest
+        # at 1.5 ATR. Every published result -- PF 1.38, the sensitivity
+        # plateau, Monte Carlo -- was measured with plain SL/TP at 3R, so what
+        # trades live had never been tested. The first week showed it: two
+        # winners reached +1.93R and +2.04R and banked about +0.9R each.
+        # True mirrors TradeManager so the two can be compared.
+        self.live_management = live_management
+        # A gentler rule than live_management, for testing on its own: move the
+        # stop to entry once price has run breakeven_at_r × the initial risk,
+        # with no partial close and no trail. The 1R scale-out measured worse
+        # than a fixed stop (PF 1.18 vs 1.27, 10/22 vs 15/22 folds) because it
+        # stopped out winners that would have reached 3R; a later break-even
+        # trigger keeps more of that tail while still protecting a trade that
+        # has gone most of the way. 0 disables it. Ignored when
+        # live_management is on, which already moves the stop at 1R.
+        self.breakeven_at_r = breakeven_at_r
         self._regime_engine = None
 
     def run(
@@ -104,7 +141,9 @@ class BacktestEngine:
                     pnl = self._pnl(open_pos.side, open_pos.entry_price, fill, open_pos.volume, symbol)
                     commission = cost.commission(open_pos.volume)
                     slip_cost = abs(fill - exit_price) * open_pos.volume * (100_000 if not symbol.startswith("XAU") else 100)
-                    pnl_net = pnl - commission - open_pos.commission_paid
+                    swap = cost.swap_cost(open_pos.side, open_pos.volume,
+                                          open_pos.entry_time, bar.open_time)
+                    pnl_net = pnl - commission - open_pos.commission_paid - swap + open_pos.realized_net
 
                     trades.append(BacktestTrade(
                         symbol=symbol,
@@ -119,6 +158,7 @@ class BacktestEngine:
                         pnl=pnl,
                         pnl_net=pnl_net,
                         commission=commission + open_pos.commission_paid,
+                        swap=swap,
                         slippage_cost=slip_cost + open_pos.slippage_paid,
                         strategy=open_pos.strategy,
                         exit_reason=reason,
@@ -128,13 +168,20 @@ class BacktestEngine:
                     returns.append(pnl_net / self.initial_capital)
                     open_pos = None
 
+            # --- Live trade management, applied after this bar's exit check ---
+            if (open_pos is not None and open_pos.initial_stop_dist > 0
+                    and (self.live_management or self.breakeven_at_r > 0)):
+                self._manage_like_live(open_pos, bar, window, cost, symbol)
+
             # --- Time exit: the measured horizon has run out ---
             if open_pos is not None and open_pos.max_hold_bars > 0                     and (i - open_pos.entry_bar) >= open_pos.max_hold_bars:
                 fill = cost.exit_cost_price(open_pos.side, bar.close)
                 pnl = self._pnl(open_pos.side, open_pos.entry_price, fill, open_pos.volume, symbol)
                 commission = cost.commission(open_pos.volume)
                 slip_cost = abs(fill - bar.close) * open_pos.volume * (100_000 if not symbol.startswith("XAU") else 100)
-                pnl_net = pnl - commission - open_pos.commission_paid
+                swap = cost.swap_cost(open_pos.side, open_pos.volume,
+                                      open_pos.entry_time, bar.open_time)
+                pnl_net = pnl - commission - open_pos.commission_paid - swap + open_pos.realized_net
                 trades.append(BacktestTrade(
                     symbol=symbol,
                     side=open_pos.side,
@@ -148,6 +195,7 @@ class BacktestEngine:
                     pnl=pnl,
                     pnl_net=pnl_net,
                     commission=commission + open_pos.commission_paid,
+                    swap=swap,
                     slippage_cost=slip_cost + open_pos.slippage_paid,
                     strategy=open_pos.strategy,
                     exit_reason="time",
@@ -219,6 +267,37 @@ class BacktestEngine:
                     continue
 
             sig = max(actionable, key=lambda s: s.confidence)
+
+            # --- The decision layer, when one is supplied ---
+            if self.brain is not None:
+                side_val = getattr(sig.side, "value", str(sig.side))
+                agreeing = sum(
+                    1 for s2 in actionable
+                    if getattr(s2.side, "value", str(s2.side)) == side_val
+                ) or 1
+                try:
+                    verdict = self.brain.decide(
+                        sig,
+                        indicators=ind_latest,
+                        regime=bar_regime,
+                        agreeing=agreeing,
+                        h1_side=self._h1_side(window),
+                        spread=cost.spread_price(mid) if hasattr(cost, "spread_price") else None,
+                        candles=window,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        equity=equity,
+                    )
+                except Exception:
+                    # A brain that throws must not silently become a brain that
+                    # approves -- that would quietly restore the very numbers
+                    # this is here to correct. Refuse the bar instead.
+                    logger.debug("brain raised on %s; treating as veto", symbol, exc_info=True)
+                    continue
+                size_mult = min(1.0, float(getattr(verdict, "size_mult", 1.0) or 0.0))
+                if not getattr(verdict, "allow", False) or size_mult <= 0:
+                    continue
+
             entry_mid = mid
             fill = cost.entry_cost_price(sig.side.value, entry_mid)
 
@@ -252,6 +331,7 @@ class BacktestEngine:
                 commission_paid=commission,
                 slippage_paid=slip,
                 max_hold_bars=self._hold_limit(sig.strategy_name),
+                initial_stop_dist=stop_dist,
             )
 
         # Force close at end
@@ -260,7 +340,9 @@ class BacktestEngine:
             fill = cost.exit_cost_price(open_pos.side, bar.close)
             pnl = self._pnl(open_pos.side, open_pos.entry_price, fill, open_pos.volume, symbol)
             commission = cost.commission(open_pos.volume)
-            pnl_net = pnl - commission - open_pos.commission_paid
+            swap = cost.swap_cost(open_pos.side, open_pos.volume,
+                                  open_pos.entry_time, bar.open_time)
+            pnl_net = pnl - commission - open_pos.commission_paid - swap + open_pos.realized_net
             trades.append(BacktestTrade(
                 symbol=symbol,
                 side=open_pos.side,
@@ -274,6 +356,7 @@ class BacktestEngine:
                 pnl=pnl,
                 pnl_net=pnl_net,
                 commission=commission + open_pos.commission_paid,
+                swap=swap,
                 strategy=open_pos.strategy,
                 exit_reason="end_of_data",
                 bars_held=len(candles) - 1 - open_pos.entry_bar,
@@ -296,6 +379,36 @@ class BacktestEngine:
             },
         )
 
+    @staticmethod
+    def _h1_side(window) -> str | None:
+        """The H1 trend direction, resampled from the window.
+
+        The brain's hardest veto is "against H1 filter" -- 936 of the recorded
+        ones. Omitting it here would let the backtest approve trades the live
+        bot refuses, which is the opposite of the point.
+        """
+        try:
+            from molido_brain.features import h1_side_from_bars
+        except Exception:
+            return None
+        if not window:
+            return None
+        step = 4  # M15 -> H1; a coarser input just makes this a no-op grouping
+        h1: list = []
+        for i in range(0, len(window) - step + 1, step):
+            grp = window[i:i + step]
+            first, last = grp[0], grp[-1]
+            h1.append(type(first)(
+                symbol=first.symbol, timeframe=first.timeframe,
+                open_time=first.open_time, open=first.open,
+                high=max(c.high for c in grp), low=min(c.low for c in grp),
+                close=last.close, volume=sum(c.volume for c in grp),
+            ))
+        try:
+            return h1_side_from_bars(h1)
+        except Exception:
+            return None
+
     def _hold_limit(self, strategy_name: str) -> int:
         """How many bars this strategy's positions may be held.
 
@@ -304,10 +417,82 @@ class BacktestEngine:
         edge was measured over a fixed horizon knows that horizon, and nothing
         else does.
         """
+        # Negative means "explicitly none". Without this there is no way to
+        # express a no-horizon run: 0 means "defer to the strategy", so a study
+        # asking for no time exit silently got the strategy's own default
+        # instead. That is not hypothetical -- it made a control row identical
+        # to the row it was supposed to control, and the pair looked like
+        # working evidence because the numbers differed for a different reason.
+        if self.max_hold_bars < 0:
+            return 0
         if self.max_hold_bars > 0:
             return self.max_hold_bars
         strat = self.strategies.get(strategy_name)
         return int(getattr(strat, "max_hold_bars", 0) or 0)
+
+    def _manage_like_live(self, pos: _OpenPos, bar: Candle, window, cost, symbol: str) -> None:
+        """Mirror TradeManager: at +1R stop to entry and close half, then trail.
+
+        Checked against the bar's extreme, after the bar's SL/TP test, so a bar
+        cannot both bank the partial and be stopped at break-even -- the move to
+        break-even takes effect from the next bar, as it would live where the
+        modify lands after the price that triggered it.
+        """
+        d = pos.initial_stop_dist
+        buy = pos.side == "BUY"
+
+        if not self.live_management:
+            # Break-even only: one stop move at breakeven_at_r, nothing else.
+            trigger = pos.entry_price + d * self.breakeven_at_r if buy \
+                else pos.entry_price - d * self.breakeven_at_r
+            if not pos.be_done and (bar.high >= trigger if buy else bar.low <= trigger):
+                pos.stop_loss = pos.entry_price
+                pos.be_done = True
+            return
+
+        one_r = pos.entry_price + d if buy else pos.entry_price - d
+        reached = bar.high >= one_r if buy else bar.low <= one_r
+
+        if reached and not pos.be_done:
+            pos.stop_loss = pos.entry_price
+            pos.be_done = True
+
+        if reached and not pos.partial_done:
+            half = round(pos.volume * 0.5, 2)
+            # Same rule as live: both the closed half and the remainder must be
+            # at least the broker minimum, otherwise nothing is closed and the
+            # position keeps its full size at break-even with no trail.
+            if half >= 0.01 and round(pos.volume - half, 2) >= 0.01:
+                share = half / pos.volume
+                fill = cost.exit_cost_price(pos.side, one_r)
+                pnl = self._pnl(pos.side, pos.entry_price, fill, half, symbol)
+                part_swap = cost.swap_cost(pos.side, half, pos.entry_time, bar.open_time)
+                pos.realized_net += pnl - cost.commission(half) - pos.commission_paid * share - part_swap
+                pos.commission_paid *= (1.0 - share)
+                pos.volume = round(pos.volume - half, 2)
+                pos.partial_done = True
+
+        if pos.partial_done:
+            atr = self._atr(window)
+            if atr > 0:
+                if buy:
+                    new_sl = bar.close - 1.5 * atr
+                    if (pos.stop_loss is None or new_sl > pos.stop_loss) and new_sl < bar.close:
+                        pos.stop_loss = new_sl
+                else:
+                    new_sl = bar.close + 1.5 * atr
+                    if (pos.stop_loss is None or new_sl < pos.stop_loss) and new_sl > bar.close:
+                        pos.stop_loss = new_sl
+
+    @staticmethod
+    def _atr(window, period: int = 14) -> float:
+        if len(window) < period + 1:
+            return 0.0
+        trs = []
+        for k in range(len(window) - period, len(window)):
+            c, prev = window[k], window[k - 1].close
+            trs.append(max(c.high - c.low, abs(c.high - prev), abs(c.low - prev)))
+        return sum(trs) / period
 
     @staticmethod
     def _check_exit(pos: _OpenPos, bar: Candle) -> tuple[float, str] | None:
@@ -326,12 +511,32 @@ class BacktestEngine:
 
     @staticmethod
     def _pnl(side: str, entry: float, exit: float, volume: float, symbol: str) -> float:
+        """Profit in account currency (USD).
+
+        A JPY-quoted pair settles in yen, so the move has to be converted
+        before it is called dollars. Without that, GBPJPY reported net figures
+        around 150x too large -- +61,027 where a comparable EURUSD cell showed
+        -597 -- which made JPY rows look like the biggest wins and the biggest
+        disasters in the study when they were neither.
+
+        Profit factor and the fold counts were never distorted by this: PF is
+        a ratio, and a fold is judged by the sign of its net, so a constant
+        scale factor cancels in both. Only the currency amounts were wrong.
+
+        The exit price is the best available spot for the quote currency at
+        the moment of the close, which is what makes it usable as the
+        conversion rate here without a second price feed.
+        """
         direction = 1.0 if side.upper() == "BUY" else -1.0
         move = (exit - entry) * direction
-        # Approximate $ value
         if symbol.startswith("XAU"):
-            return move * volume * 100  # rough
-        return move * volume * 100_000
+            return move * volume * 100        # metals quote per 100 units
+        usd = move * volume * 100_000
+        if symbol.endswith("JPY") and exit:
+            # USDJPY: quote currency IS the exit price. XXXJPY: same divisor,
+            # since the yen leg is what needs converting either way.
+            return usd / exit
+        return usd
 
     def _compute_metrics(
         self,

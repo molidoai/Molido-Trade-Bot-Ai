@@ -1,13 +1,26 @@
 "use client";
 
+/**
+ * Settings.
+ *
+ * The MT5 login block is gone. Broker credentials belong on the accounts page,
+ * which owns them properly -- per account, with enable/disable, and with the
+ * password write-only. Having them here too meant one terminal's credentials
+ * could be edited from two places that did not agree, and it put a password
+ * field on a page people open to adjust a risk number.
+ *
+ * The API still accepts those fields; this page simply no longer sends them,
+ * so nothing stored is disturbed.
+ *
+ * Colours come from the design tokens rather than hardcoded slate/amber/cyan
+ * utilities, which were fixed to one theme and drifted from every other page.
+ */
+
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { API, getToken } from "@/lib/auth";
 
 type FormState = {
-  mt5_login: string;
-  mt5_password: string;
-  mt5_server: string;
-  mt5_path: string;
   symbols: string;
   timeframe: string;
   telegram_bot_token: string;
@@ -17,15 +30,10 @@ type FormState = {
   max_daily_loss: number;
   max_drawdown: number;
   max_open_positions: number;
-  mt5_password_set: boolean;
   telegram_bot_token_set: boolean;
 };
 
 const empty: FormState = {
-  mt5_login: "",
-  mt5_password: "",
-  mt5_server: "",
-  mt5_path: "",
   symbols: "auto",
   timeframe: "AUTO",
   telegram_bot_token: "",
@@ -35,76 +43,79 @@ const empty: FormState = {
   max_daily_loss: 0.02,
   max_drawdown: 0.04,
   max_open_positions: 3,
-  mt5_password_set: false,
   telegram_bot_token_set: false,
 };
 
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
+function Field({ label, hint, children }: {
+  label: string; hint?: string; children: React.ReactNode;
 }) {
   return (
-    <label className="block space-y-1">
-      <span className="text-sm text-slate-300">{label}</span>
+    <label className="block">
+      <span className="label">{label}</span>
       {children}
-      {hint ? <span className="block text-xs text-slate-500">{hint}</span> : null}
+      {hint ? <span className="hint">{hint}</span> : null}
     </label>
   );
 }
 
-const inputCls = "w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2";
+function Section({ title, note, children }: {
+  title: string; note?: string; children: React.ReactNode;
+}) {
+  return (
+    <section className="panel p-5">
+      <h2 className="text-[15px] font-bold">{title}</h2>
+      {note ? <p className="mt-1 text-xs text-[var(--muted)]">{note}</p> : null}
+      <div className="mt-4">{children}</div>
+    </section>
+  );
+}
 
 export default function SettingsPage() {
   const [form, setForm] = useState<FormState>(empty);
   const [msg, setMsg] = useState("");
+  const [err, setErr] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  useEffect(() => {
-    const t = getToken();
-    if (t) void load(t);
-  }, []);
+  const set = <K extends keyof FormState>(k: K, v: FormState[K]) =>
+    setForm((f) => ({ ...f, [k]: v }));
 
-  async function load(tkn: string) {
-    const r = await fetch(`${API}/settings`, {
-      headers: { Authorization: `Bearer ${tkn}` },
-      cache: "no-store",
-    });
-    if (!r.ok) {
-      setMsg("نشست منقضی است. دوباره وارد شو.");
-      return;
-    }
-    const data = await r.json();
-    setForm({
-      ...empty,
-      ...data,
-      mt5_login: data.mt5_login || data.mt5_real_login || "",
-      mt5_server: data.mt5_server || data.mt5_real_server || "",
-      mt5_path: data.mt5_path || data.mt5_real_path || "",
-      mt5_password: "",
-      telegram_bot_token: "",
-      mt5_password_set: Boolean(data.mt5_password_set || data.mt5_real_password_set),
-      telegram_bot_token_set: Boolean(data.telegram_bot_token_set),
-    });
-    setMsg("تنظیمات از سرور خوانده شد");
-  }
+  useEffect(() => {
+    void (async () => {
+      const token = getToken();
+      if (!token) { setErr(true); setMsg("برای دیدن تنظیمات وارد شوید"); return; }
+      try {
+        const r = await fetch(`${API}/settings`, {
+          headers: { Authorization: `Bearer ${token}` }, cache: "no-store",
+        });
+        if (!r.ok) {
+          setErr(true);
+          setMsg(r.status === 401 ? "نشست منقضی شده" : "خطا در خواندن تنظیمات");
+          return;
+        }
+        const data = await r.json();
+        setForm({
+          symbols: data.symbols ?? "auto",
+          timeframe: data.timeframe ?? "AUTO",
+          telegram_bot_token: "",
+          telegram_admin_chat_id: data.telegram_admin_chat_id ?? "",
+          telegram_allowed_chat_ids: data.telegram_allowed_chat_ids ?? "",
+          default_risk_per_trade: data.default_risk_per_trade ?? 0.0025,
+          max_daily_loss: data.max_daily_loss ?? 0.02,
+          max_drawdown: data.max_drawdown ?? 0.04,
+          max_open_positions: data.max_open_positions ?? 3,
+          telegram_bot_token_set: Boolean(data.telegram_bot_token_set),
+        });
+        setErr(false); setMsg("");
+      } catch { setErr(true); setMsg("API در دسترس نیست"); }
+    })();
+  }, []);
 
   async function save() {
     const token = getToken();
-    if (!token) {
-      setMsg("اول وارد شو");
-      return;
-    }
+    if (!token) { setErr(true); setMsg("اول وارد شوید"); return; }
     setBusy(true);
     try {
       const body: Record<string, unknown> = {
-        mt5_login: form.mt5_login,
-        mt5_server: form.mt5_server,
-        mt5_path: form.mt5_path,
         symbols: form.symbols,
         timeframe: form.timeframe,
         telegram_admin_chat_id: form.telegram_admin_chat_id,
@@ -114,78 +125,70 @@ export default function SettingsPage() {
         max_drawdown: form.max_drawdown,
         max_open_positions: form.max_open_positions,
       };
-      if (form.mt5_password) body.mt5_password = form.mt5_password;
+      // Blank means "keep the stored token" -- an empty string would erase it.
       if (form.telegram_bot_token) body.telegram_bot_token = form.telegram_bot_token;
+
       const r = await fetch(`${API}/settings`, {
+        // PUT, not PATCH -- the router only defines GET and PUT, and a
+        // PATCH here returns 405 while looking like a save that failed.
         method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify(body),
       });
-      if (r.status === 403) {
-        setMsg("فقط مالک می‌تواند ذخیره کند");
-        return;
-      }
+      const out = await r.json().catch(() => ({}));
       if (!r.ok) {
-        setMsg("ذخیره نشد");
+        setErr(true);
+        setMsg(out?.detail ? String(out.detail) : `خطا (${r.status})`);
         return;
       }
-      setMsg("ذخیره شد روی سرور. موتور از همین فایل می‌خواند.");
+      setErr(false);
+      setMsg("ذخیره شد");
       setForm((f) => ({
         ...f,
-        mt5_password: "",
         telegram_bot_token: "",
-        mt5_password_set: f.mt5_password_set || Boolean(form.mt5_password),
         telegram_bot_token_set: f.telegram_bot_token_set || Boolean(form.telegram_bot_token),
       }));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function set<K extends keyof FormState>(key: K, value: FormState[K]) {
-    setForm((f) => ({ ...f, [key]: value }));
+    } catch { setErr(true); setMsg("API در دسترس نیست"); }
+    finally { setBusy(false); }
   }
 
   return (
-    <div className="space-y-6">
-      <h2 className="aurora text-3xl font-black">تنظیمات</h2>
-      <p className="text-sm text-slate-400">
-        همه مقدارهای لازم را همین‌جا وارد کن. روی سرور ذخیره می‌شود، نه داخل گیت. ورود جداگانه از صفحه لاگین است.
-      </p>
+    <div className="mx-auto max-w-4xl space-y-5">
+      <header>
+        <h1>تنظیمات</h1>
+        <p className="mt-1 text-sm text-[var(--muted)]">
+          روی سرور ذخیره می‌شود، نه در گیت.
+        </p>
+      </header>
 
-      <div className="glass space-y-5 rounded-2xl p-5">
-        <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 p-3 text-xs text-amber-200">
-          حالت حساب (DEMO/REAL) و روشن/خاموش کردن مستر از اینجا قابل تغییر نیست — عمداً. برای رفتن به REAL باید از
-          صفحه «معاملات زنده» با تأیید دومرحله‌ای اقدام کنید، نه با یک ذخیره‌ی ساده.
+      {msg ? (
+        <div className="rounded-[var(--r)] border px-4 py-3 text-sm"
+          style={err
+            ? { borderColor: "var(--down)", background: "var(--down-soft)", color: "var(--down)" }
+            : { borderColor: "var(--up)", background: "var(--up-soft)", color: "var(--up)" }}>
+          {msg}
         </div>
+      ) : null}
 
-        <p className="pt-1 text-sm font-medium text-slate-300">متاتریدر ۵</p>
-        <div className="grid gap-3 md:grid-cols-2">
-          <Field label="لاگین MT5">
-            <input className={inputCls} value={form.mt5_login} onChange={(e) => set("mt5_login", e.target.value)} />
-          </Field>
-          <Field label="رمز MT5" hint={form.mt5_password_set ? "ذخیره شده. خالی بگذار اگر عوض نمی‌کنی." : "هنوز ذخیره نشده"}>
-            <input className={inputCls} type="password" value={form.mt5_password} onChange={(e) => set("mt5_password", e.target.value)} />
-          </Field>
-          <Field label="سرور بروکر" hint="مثل RoboForex-Demo یا نام سرور حساب واقعی">
-            <input className={inputCls} value={form.mt5_server} onChange={(e) => set("mt5_server", e.target.value)} />
-          </Field>
-          <Field label="مسیر ترمینال" hint="اختیاری. روی ویندوز یا Wine، مسیر terminal64.exe">
-            <input className={inputCls} value={form.mt5_path} onChange={(e) => set("mt5_path", e.target.value)} />
-          </Field>
-        </div>
+      <div className="inset flex flex-wrap items-center justify-between gap-3 p-4 text-xs">
+        <span className="text-[var(--ink-2)]">
+          حساب‌های بروکر و رمزشان از این صفحه جدا شده‌اند.
+        </span>
+        <Link href="/accounts" className="btn h-8 min-h-0 px-3 text-xs">
+          رفتن به حساب‌ها
+        </Link>
+      </div>
 
-        <p className="pt-1 text-sm font-medium text-slate-300">بازار</p>
-        <div className="grid gap-3 md:grid-cols-2">
-          <Field label="نمادها" hint="خالی یا auto یعنی مغز انتخاب می‌کند">
-            <input className={inputCls} value={form.symbols} onChange={(e) => set("symbols", e.target.value)} />
+      <Section title="بازار" note="نمادها و بازه‌ی زمانی که موتور روی آن ارزیابی می‌کند.">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="نمادها" hint="خالی یا auto یعنی انتخاب با موتور">
+            <input className="input" dir="ltr" value={form.symbols}
+              onChange={(e) => set("symbols", e.target.value)} />
           </Field>
-          <Field label="تایم‌فریم">
-            <select className={inputCls} value={form.timeframe} onChange={(e) => set("timeframe", e.target.value)}>
-              <option value="AUTO">AUTO (مغز)</option>
+          <Field label="تایم‌فریم" hint="AUTO ورودها را روی M15 و M5 می‌گردد">
+            <select className="input" dir="ltr" value={form.timeframe}
+              onChange={(e) => set("timeframe", e.target.value)}>
+              <option value="AUTO">AUTO</option>
               <option value="M5">M5</option>
               <option value="M15">M15</option>
               <option value="H1">H1</option>
@@ -194,40 +197,66 @@ export default function SettingsPage() {
             </select>
           </Field>
         </div>
+      </Section>
 
-        <p className="pt-1 text-sm font-medium text-slate-300">تلگرام</p>
-        <div className="grid gap-3 md:grid-cols-2">
-          <Field label="توکن ربات" hint={form.telegram_bot_token_set ? "ذخیره شده. خالی بگذار اگر عوض نمی‌کنی." : "هنوز ذخیره نشده"}>
-            <input className={inputCls} type="password" value={form.telegram_bot_token} onChange={(e) => set("telegram_bot_token", e.target.value)} />
+      <Section title="ریسک" note="اعداد کسری‌اند: ۰.۰۱ یعنی یک درصد.">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="ریسک هر معامله" hint="۰.۰۰۲۵ = ۰.۲۵٪">
+            <input className="input num" type="number" step="0.0005" min="0.0001" max="0.05"
+              value={form.default_risk_per_trade}
+              onChange={(e) => set("default_risk_per_trade", Number(e.target.value))} />
           </Field>
-          <Field label="آیدی چت ادمین">
-            <input className={inputCls} value={form.telegram_admin_chat_id} onChange={(e) => set("telegram_admin_chat_id", e.target.value)} />
+          <Field label="سقف ضرر روزانه" hint="۰.۰۲ = ۲٪">
+            <input className="input num" type="number" step="0.005" min="0.001" max="0.2"
+              value={form.max_daily_loss}
+              onChange={(e) => set("max_daily_loss", Number(e.target.value))} />
           </Field>
-          <Field label="آیدی‌های مجاز" hint="چند تا را با کاما جدا کن">
-            <input className={inputCls} value={form.telegram_allowed_chat_ids} onChange={(e) => set("telegram_allowed_chat_ids", e.target.value)} />
-          </Field>
-        </div>
-
-        <p className="pt-1 text-sm font-medium text-slate-300">ریسک</p>
-        <div className="grid gap-3 md:grid-cols-4">
-          <Field label="ریسک هر معامله" hint="مثلا ۰.۰۰۲۵ یعنی ۰.۲۵٪">
-            <input className={inputCls} type="number" step="0.001" value={form.default_risk_per_trade} onChange={(e) => set("default_risk_per_trade", Number(e.target.value))} />
-          </Field>
-          <Field label="سقف ضرر روزانه" hint="مثلا ۰.۰۲ یعنی ۲٪">
-            <input className={inputCls} type="number" step="0.001" value={form.max_daily_loss} onChange={(e) => set("max_daily_loss", Number(e.target.value))} />
-          </Field>
-          <Field label="حداکثر دراودان" hint="مثلا ۰.۰۴ یعنی ۴٪">
-            <input className={inputCls} type="number" step="0.001" value={form.max_drawdown} onChange={(e) => set("max_drawdown", Number(e.target.value))} />
+          <Field label="حداکثر افت" hint="۰.۰۴ = ۴٪">
+            <input className="input num" type="number" step="0.005" min="0.001" max="0.5"
+              value={form.max_drawdown}
+              onChange={(e) => set("max_drawdown", Number(e.target.value))} />
           </Field>
           <Field label="حداکثر پوزیشن باز">
-            <input className={inputCls} type="number" value={form.max_open_positions} onChange={(e) => set("max_open_positions", Number(e.target.value))} />
+            <input className="input num" type="number" step="1" min="1" max="50"
+              value={form.max_open_positions}
+              onChange={(e) => set("max_open_positions", Number(e.target.value))} />
           </Field>
         </div>
+      </Section>
 
-        <button type="button" disabled={busy} onClick={save} className="rounded-xl bg-amber-400/20 px-4 py-2 text-amber-200">
-          ذخیره روی سرور
+      <Section title="تلگرام" note="گزارش روزانه و هشدارها از این ربات فرستاده می‌شود.">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="توکن ربات"
+            hint={form.telegram_bot_token_set ? "ذخیره شده — خالی بگذارید تا تغییر نکند" : "هنوز ذخیره نشده"}>
+            <input className="input" type="password" dir="ltr" autoComplete="new-password"
+              placeholder={form.telegram_bot_token_set ? "بدون تغییر" : ""}
+              value={form.telegram_bot_token}
+              onChange={(e) => set("telegram_bot_token", e.target.value)} />
+          </Field>
+          <Field label="آیدی چت ادمین">
+            <input className="input num" dir="ltr" value={form.telegram_admin_chat_id}
+              onChange={(e) => set("telegram_admin_chat_id", e.target.value)} />
+          </Field>
+          <Field label="آیدی‌های مجاز" hint="با کاما جدا کنید">
+            <input className="input" dir="ltr" value={form.telegram_allowed_chat_ids}
+              onChange={(e) => set("telegram_allowed_chat_ids", e.target.value)} />
+          </Field>
+        </div>
+      </Section>
+
+      {/* Kept visible rather than dropped: it explains an absence, and an
+          unexplained absence reads as a missing feature. */}
+      <div className="rounded-[var(--r)] border p-4 text-xs"
+        style={{ borderColor: "color-mix(in srgb, var(--warn) 35%, transparent)",
+                 background: "var(--warn-soft)", color: "var(--warn)" }}>
+        حالت حساب (DEMO/REAL) و روشن/خاموش کردن ربات عمداً اینجا نیست. رفتن به حساب واقعی
+        از صفحه‌ی «زنده» و با تأیید دومرحله‌ای انجام می‌شود، نه با یک ذخیره‌ی ساده.
+      </div>
+
+      <div className="flex items-center gap-3 pb-4">
+        <button type="button" className="btn btn-primary" disabled={busy} onClick={save}>
+          {busy ? "در حال ذخیره…" : "ذخیره روی سرور"}
         </button>
-        {msg && <p className="text-sm text-cyan-300">{msg}</p>}
       </div>
     </div>
   );

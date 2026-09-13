@@ -428,14 +428,36 @@ class TradingPipeline:
         raw_lot = risk_result.lot_size * min(1.0, size_mult)
         lot = round(math.floor(raw_lot / step + 1e-9) * step, 4)
         if lot < limits.min_lot_size:
-            self._journal("skip", symbol=symbol, reason="size_mult reduced lot below min", p_win=p_win)
-            return PipelineResult(
-                signal=final,
-                skipped_reason="size_mult reduced lot below min",
-                p_win=p_win,
-                expected_r=expected_r,
-                size_mult=size_mult,
-            )
+            # The brain's multiplier is a preference; the risk engine's
+            # approval is the limit. On a small account the preference cannot
+            # be expressed at all -- the prop account's approved size IS the
+            # broker minimum, so any multiplier under 1.0 floors it to zero and
+            # kills a trade the risk engine had already sized and allowed. That
+            # is how FundedNext took no trades on 2026-09-08 while the same
+            # signals filled on the larger account.
+            #
+            # Taking the minimum cannot exceed approved risk, because the risk
+            # engine approved at least that much. If it approved less than the
+            # minimum, the trade is genuinely untradeable and still skipped.
+            if risk_result.lot_size >= limits.min_lot_size:
+                lot = limits.min_lot_size
+                self._journal(
+                    "size_floor", symbol=symbol, p_win=p_win,
+                    reason=(
+                        f"brain size_mult {size_mult:.2f} would floor "
+                        f"{risk_result.lot_size:.2f} to zero; taking the broker "
+                        f"minimum {limits.min_lot_size} instead"
+                    ),
+                )
+            else:
+                self._journal("skip", symbol=symbol, reason="size_mult reduced lot below min", p_win=p_win)
+                return PipelineResult(
+                    signal=final,
+                    skipped_reason="size_mult reduced lot below min",
+                    p_win=p_win,
+                    expected_r=expected_r,
+                    size_mult=size_mult,
+                )
 
         self._journal(
             "accept",
@@ -491,6 +513,12 @@ class TradingPipeline:
                 take_profit=order_tp,
                 risk_amount=round(risk_result.risk_amount * min(1.0, size_mult), 2),
                 strategy=final.strategy,
+                # The bar size this entry was decided on. Trade management --
+                # the holding horizon above all -- counts bars, so it has to
+                # count the same bars the entry was made on. Without this the
+                # exit side falls back to a fixed timeframe and a position
+                # opened on one bar size is managed on another.
+                timeframe=getattr(timeframe, "value", timeframe),
                 # Why this trade was taken. Without it a losing record can be
                 # counted but not diagnosed -- you can see that a strategy lost
                 # without ever seeing what it thought it saw.
