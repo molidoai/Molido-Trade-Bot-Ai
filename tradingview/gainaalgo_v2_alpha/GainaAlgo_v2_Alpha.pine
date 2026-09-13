@@ -1,0 +1,344 @@
+//@version=6
+// GainaAlgo v2 Alpha — original implementation of a visual BUY/SELL +
+// risk/reward concept. Not derived from, and not a reverse-engineering of,
+// any proprietary script.
+//
+// Non-repaint contract (see README):
+//   * signals are decided only on confirmed bars (barstate.isconfirmed)
+//   * higher-timeframe data uses the previous completed HTF bar
+//   * pivots are used only after their confirmation delay has elapsed
+//   * entry / SL / TP are frozen at creation and never recalculated
+//   * TP/SL/expiry resolution also happens only on confirmed bars
+indicator("GainaAlgo v2 Alpha", shorttitle = "GA v2α", overlay = true,
+     max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+
+// ───────────────────────────── inputs ─────────────────────────────
+grpS = "Signal engine"
+minScore     = input.int(70,  "Minimum score",           minval = 0, maxval = 100, group = grpS)
+strongScore  = input.int(85,  "Strong signal score",     minval = 0, maxval = 100, group = grpS)
+cooldownBars = input.int(5,   "Min bars between signals", minval = 0, group = grpS)
+onePerSide   = input.bool(true, "No new signal while a same-side setup is active", group = grpS)
+emaFastLen   = input.int(50,  "Trend EMA fast",  minval = 2, group = grpS)
+emaSlowLen   = input.int(200, "Trend EMA slow",  minval = 3, group = grpS)
+rsiLen       = input.int(14,  "RSI length",      minval = 2, group = grpS)
+donLen       = input.int(20,  "Breakout lookback", minval = 2, group = grpS)
+pivLen       = input.int(5,   "Swing pivot strength (bars each side)", minval = 1, group = grpS)
+volMin       = input.float(0.7, "Volatility: min ATR / ATR avg", step = 0.05, group = grpS)
+volMax       = input.float(2.5, "Volatility: max ATR / ATR avg", step = 0.05, group = grpS)
+
+grpM = "Multi-timeframe"
+useMTF = input.bool(true, "Use MTF confirmation", group = grpM)
+mtfTf  = input.timeframe("240", "MTF timeframe (must be higher than chart)", group = grpM)
+mtfEma = input.int(50, "MTF EMA length", minval = 2, group = grpM)
+
+grpR = "Risk"
+slMode     = input.string("ATR", "Stop-loss mode", options = ["ATR", "Swing", "Hybrid"], group = grpR)
+atrLen     = input.int(14,    "ATR length",     minval = 1, group = grpR)
+atrMult    = input.float(1.5, "ATR multiplier", minval = 0.1, step = 0.1, group = grpR)
+rrRatio    = input.float(2.0, "Reward : Risk",  minval = 0.1, step = 0.1, group = grpR)
+swingBuf   = input.float(0.1, "Swing stop buffer (× ATR)", minval = 0.0, step = 0.05, group = grpR)
+minRiskAtr = input.float(0.5, "Hybrid: min swing risk (× ATR)", minval = 0.0, step = 0.1, group = grpR)
+maxRiskAtr = input.float(3.0, "Hybrid: max swing risk (× ATR)", minval = 0.1, step = 0.1, group = grpR)
+expiryBars = input.int(100,   "Expire setup after N bars", minval = 1, group = grpR)
+
+grpV = "Visuals"
+labelSizeS = input.string("large", "Signal label size", options = ["tiny", "small", "normal", "large", "huge"], group = grpV)
+boxTransp  = input.int(82, "Box transparency", minval = 0, maxval = 100, group = grpV)
+showEntry  = input.bool(true, "Show entry line",  group = grpV)
+showTP     = input.bool(true, "Show TP",          group = grpV)
+showSL     = input.bool(true, "Show SL",          group = grpV)
+showScore  = input.bool(true, "Show score",       group = grpV)
+showRR     = input.bool(true, "Show RR",          group = grpV)
+showInfo   = input.bool(true, "Show info box",    group = grpV)
+showDash   = input.bool(true, "Show dashboard",   group = grpV)
+maxSetups  = input.int(20, "Maximum displayed setups", minval = 1, maxval = 100, group = grpV)
+colBuy     = input.color(color.rgb(38, 166, 154), "Buy colour",    group = grpV)
+colSell    = input.color(color.rgb(239, 83, 80),  "Sell colour",   group = grpV)
+colReward  = input.color(color.rgb(38, 166, 154), "Reward zone",   group = grpV)
+colRisk    = input.color(color.rgb(239, 83, 80),  "Risk zone",     group = grpV)
+
+// ─────────────────────────── helpers ──────────────────────────────
+f_size(string s) =>
+    switch s
+        "tiny"   => size.tiny
+        "small"  => size.small
+        "normal" => size.normal
+        "huge"   => size.huge
+        => size.large
+
+f_px(float v) => str.tostring(v, format.mintick)
+
+// ─────────────────────────── market data ──────────────────────────
+atr    = ta.atr(atrLen)
+atrAvg = ta.sma(atr, 50)
+emaF   = ta.ema(close, emaFastLen)
+emaS   = ta.ema(close, emaSlowLen)
+rsi    = ta.rsi(close, rsiLen)
+[macdLine, macdSig, hist] = ta.macd(close, 12, 26, 9)
+
+volRatio = atr / atrAvg
+volOk    = not na(volRatio) and volRatio >= volMin and volRatio <= volMax
+
+// Previous-bar channel: the current bar is never compared with itself.
+donHi = ta.highest(high, donLen)[1]
+donLo = ta.lowest(low, donLen)[1]
+
+// Pivots are reported pivLen bars after the pivot bar — that is their
+// confirmation delay, and they are only used from that moment on.
+ph = ta.pivothigh(high, pivLen, pivLen)
+pl = ta.pivotlow(low, pivLen, pivLen)
+var float swingHi = na
+var float swingLo = na
+if not na(ph)
+    swingHi := ph
+if not na(pl)
+    swingLo := pl
+
+// MTF: last COMPLETED higher-timeframe bar ([1] + lookahead_on is the
+// documented non-repainting pattern).
+mtfValid = useMTF and timeframe.in_seconds(mtfTf) > timeframe.in_seconds(timeframe.period)
+htfClose = request.security(syminfo.tickerid, mtfTf, close[1], lookahead = barmerge.lookahead_on)
+htfEma   = request.security(syminfo.tickerid, mtfTf, ta.ema(close, mtfEma)[1], lookahead = barmerge.lookahead_on)
+
+rng       = high - low
+rejUp     = rng > 0 and (math.min(open, close) - low) >= 0.5 * rng and close >= low + 0.66 * rng
+rejDn     = rng > 0 and (high - math.max(open, close)) >= 0.5 * rng and close <= high - 0.66 * rng
+breakUp   = not na(donHi) and close > donHi and close[1] <= donHi[1]
+breakDn   = not na(donLo) and close < donLo and close[1] >= donLo[1]
+
+// ───────────────────────────── score ──────────────────────────────
+// Trend 25 · Momentum 20 · Structure 15 · Volatility 15 ·
+// Breakout/Reversal 15 · MTF 10. Normalised to 0-100, so disabling MTF
+// does not silently lower every score.
+f_score(bool isLong) =>
+    float s  = 0.0
+    float mx = 90.0
+    // Trend
+    s += (isLong ? close > emaS : close < emaS) ? 10 : 0
+    s += (isLong ? emaF > emaS : emaF < emaS) ? 10 : 0
+    s += (isLong ? emaF > emaF[3] : emaF < emaF[3]) ? 5 : 0
+    // Momentum
+    s += (isLong ? rsi > 50 : rsi < 50) ? 8 : 0
+    s += (isLong ? hist > 0 : hist < 0) ? 6 : 0
+    s += (isLong ? hist > hist[1] : hist < hist[1]) ? 6 : 0
+    // Market structure
+    if isLong
+        s += (not na(swingHi) and close > swingHi) ? 15 : (not na(swingLo) and low > swingLo) ? 8 : 0
+    else
+        s += (not na(swingLo) and close < swingLo) ? 15 : (not na(swingHi) and high < swingHi) ? 8 : 0
+    // Volatility
+    s += volOk ? 15 : 0
+    // Breakout / reversal
+    s += (isLong ? breakUp : breakDn) ? 15 : (isLong ? rejUp : rejDn) ? 10 : 0
+    // MTF
+    if mtfValid
+        mx += 10
+        s += (isLong ? htfClose > htfEma : htfClose < htfEma) ? 10 : 0
+    int(math.round(s / mx * 100))
+
+scoreL = f_score(true)
+scoreS = f_score(false)
+
+// ─────────────────────────── stop / target ────────────────────────
+f_stop(int dir, float entry) =>
+    float atrStop = dir == 1 ? entry - atr * atrMult : entry + atr * atrMult
+    float swStop  = na
+    if dir == 1 and not na(swingLo)
+        swStop := swingLo - atr * swingBuf
+    if dir == -1 and not na(swingHi)
+        swStop := swingHi + atr * swingBuf
+    bool swValid = not na(swStop) and (dir == 1 ? swStop < entry : swStop > entry)
+    float dist   = swValid ? math.abs(entry - swStop) : na
+    switch slMode
+        "ATR"   => atrStop
+        "Swing" => swValid ? swStop : atrStop
+        => swValid and dist >= atr * minRiskAtr and dist <= atr * maxRiskAtr ? swStop : atrStop
+
+// ───────────────────────────── setups ─────────────────────────────
+type Setup
+    int   dir
+    int   bar0
+    float entry
+    float sl
+    float tp
+    int   score
+    int   state      // 0 active · 1 TP hit · 2 SL hit · 3 expired
+    box   riskBx
+    box   rewBx
+    line  entryLn
+    label sigLbl
+    label info
+    label status
+
+var array<Setup> setups = array.new<Setup>()
+var int lastSigBar = -1000000
+var int nTP  = 0
+var int nSL  = 0
+var int nExp = 0
+var float sumR = 0.0
+
+f_activeSide(int dir) =>
+    bool found = false
+    for s in setups
+        if s.state == 0 and s.dir == dir
+            found := true
+    found
+
+// Momentum agrees, or a reversal candle is present.
+momL = rsi > 50 or hist > hist[1]
+momS = rsi < 50 or hist < hist[1]
+
+cooled   = bar_index - lastSigBar > cooldownBars
+longRaw  = barstate.isconfirmed and cooled and (breakUp or rejUp) and scoreL >= minScore and volOk and momL and (close > emaS or rejUp)
+shortRaw = barstate.isconfirmed and cooled and (breakDn or rejDn) and scoreS >= minScore and volOk and momS and (close < emaS or rejDn)
+// Contradictory bar: take neither.
+longSig  = longRaw and not shortRaw and not (onePerSide and f_activeSide(1))
+shortSig = shortRaw and not longRaw and not (onePerSide and f_activeSide(-1))
+
+bool tpHitBar = false
+bool slHitBar = false
+
+// Resolve existing setups — confirmed bars only, never the creation bar.
+if barstate.isconfirmed
+    for s in setups
+        if s.state == 0 and bar_index > s.bar0
+            bool hitSL = s.dir == 1 ? low <= s.sl : high >= s.sl
+            bool hitTP = s.dir == 1 ? high >= s.tp : low <= s.tp
+            float risk = math.abs(s.entry - s.sl)
+            // Both inside one bar: order is unknowable from OHLC, assume the loss.
+            if hitSL
+                s.state := 2
+                nSL += 1
+                sumR -= 1.0
+                slHitBar := true
+            else if hitTP
+                s.state := 1
+                nTP += 1
+                sumR += rrRatio
+                tpHitBar := true
+            else if bar_index - s.bar0 >= expiryBars
+                s.state := 3
+                nExp += 1
+                sumR += risk > 0 ? (close - s.entry) * s.dir / risk : 0.0
+            if s.state != 0
+                box.set_right(s.riskBx, bar_index)
+                box.set_right(s.rewBx, bar_index)
+                if not na(s.entryLn)
+                    line.set_x2(s.entryLn, bar_index)
+                string txt = s.state == 1 ? "TP ✓" : s.state == 2 ? "SL ✕" : "EXPIRED"
+                color  c   = s.state == 1 ? colReward : s.state == 2 ? colRisk : color.gray
+                float  y   = s.state == 1 ? s.tp : s.state == 2 ? s.sl : close
+                s.status := label.new(bar_index, y, txt, color = color.new(c, 10), textcolor = color.white,
+                     style = label.style_label_left, size = size.small)
+
+// Extend active boxes forward in time.
+for s in setups
+    if s.state == 0
+        box.set_right(s.riskBx, bar_index + 1)
+        box.set_right(s.rewBx, bar_index + 1)
+        if not na(s.entryLn)
+            line.set_x2(s.entryLn, bar_index + 1)
+
+f_create(int dir, int score) =>
+    float entry = close
+    float sl    = f_stop(dir, entry)
+    float risk  = math.abs(entry - sl)
+    Setup out   = na
+    if risk > 0 and not na(sl)
+        float tp = dir == 1 ? entry + risk * rrRatio : entry - risk * rrRatio
+        bool strong = score >= strongScore
+        box rb  = box.new(bar_index, dir == 1 ? entry : sl, bar_index + 1, dir == 1 ? sl : entry,
+             border_color = color.new(colRisk, 40), bgcolor = color.new(colRisk, boxTransp),
+             text = "RISK", text_color = color.new(colRisk, 20), text_size = size.small, text_halign = text.align_right)
+        box wb  = box.new(bar_index, dir == 1 ? tp : entry, bar_index + 1, dir == 1 ? entry : tp,
+             border_color = color.new(colReward, 40), bgcolor = color.new(colReward, boxTransp),
+             text = "REWARD", text_color = color.new(colReward, 20), text_size = size.small, text_halign = text.align_right)
+        line el = showEntry ? line.new(bar_index, entry, bar_index + 1, entry, color = color.gray, width = 1, style = line.style_dashed) : na
+        string word = (strong ? "STRONG " : "") + (dir == 1 ? "BUY" : "SELL")
+        label sg = label.new(bar_index, dir == 1 ? low : high, word,
+             yloc = dir == 1 ? yloc.belowbar : yloc.abovebar,
+             style = dir == 1 ? label.style_label_up : label.style_label_down,
+             color = dir == 1 ? colBuy : colSell, textcolor = color.white, size = f_size(labelSizeS))
+        label inf = na
+        if showInfo
+            string t = (dir == 1 ? "BUY" : "SELL")
+            if showEntry
+                t += "\nEntry: " + f_px(entry)
+            if showTP
+                t += "\nTP: " + f_px(tp)
+            if showSL
+                t += "\nSL: " + f_px(sl)
+            if showRR
+                t += "\nRR: " + str.tostring(rrRatio, "#.##")
+            if showScore
+                t += "\nScore: " + str.tostring(score)
+            inf := label.new(bar_index, tp, t, style = label.style_label_right,
+                 color = color.new(color.black, 25), textcolor = color.white, size = size.small,
+                 textalign = text.align_left)
+        out := Setup.new(dir, bar_index, entry, sl, tp, score, 0, rb, wb, el, sg, inf, na)
+    out
+
+f_delete(Setup s) =>
+    box.delete(s.riskBx)
+    box.delete(s.rewBx)
+    line.delete(s.entryLn)
+    label.delete(s.sigLbl)
+    label.delete(s.info)
+    label.delete(s.status)
+
+Setup created = na
+if longSig
+    created := f_create(1, scoreL)
+if shortSig
+    created := f_create(-1, scoreS)
+if not na(created)
+    setups.push(created)
+    lastSigBar := bar_index
+    while setups.size() > maxSetups
+        f_delete(setups.shift())
+    string msg = syminfo.ticker + " " + timeframe.period + " " +
+         (created.score >= strongScore ? "STRONG " : "") + (created.dir == 1 ? "BUY" : "SELL") +
+         " | Entry " + f_px(created.entry) + " | SL " + f_px(created.sl) + " | TP " + f_px(created.tp) +
+         " | RR " + str.tostring(rrRatio, "#.##") + " | Score " + str.tostring(created.score)
+    alert(msg, alert.freq_once_per_bar_close)
+
+sigOk      = not na(created)
+buySig     = sigOk and created.dir == 1
+sellSig    = sigOk and created.dir == -1
+strongBuy  = buySig and created.score >= strongScore
+strongSell = sellSig and created.score >= strongScore
+
+// ───────────────────────────── alerts ─────────────────────────────
+// alertcondition() messages must be constant; the alert() call above
+// carries the full dynamic Entry/SL/TP/RR/Score message.
+alertcondition(buySig,     "BUY",         "GA v2α BUY {{ticker}} {{interval}} price {{close}}")
+alertcondition(sellSig,    "SELL",        "GA v2α SELL {{ticker}} {{interval}} price {{close}}")
+alertcondition(strongBuy,  "STRONG BUY",  "GA v2α STRONG BUY {{ticker}} {{interval}} price {{close}}")
+alertcondition(strongSell, "STRONG SELL", "GA v2α STRONG SELL {{ticker}} {{interval}} price {{close}}")
+alertcondition(tpHitBar,   "TP HIT",      "GA v2α TP HIT {{ticker}} {{interval}} price {{close}}")
+alertcondition(slHitBar,   "SL HIT",      "GA v2α SL HIT {{ticker}} {{interval}} price {{close}}")
+
+// ─────────────────────────── dashboard ────────────────────────────
+var table dash = table.new(position.top_right, 2, 7, bgcolor = color.new(color.black, 20),
+     border_color = color.new(color.gray, 70), border_width = 1)
+if showDash and barstate.islast
+    int closed = nTP + nSL + nExp
+    float wr   = closed > 0 ? nTP * 100.0 / closed : na
+    float avgR = closed > 0 ? sumR / closed : na
+    int active = 0
+    for s in setups
+        active += s.state == 0 ? 1 : 0
+    table.cell(dash, 0, 0, "GA v2α", text_color = color.white, text_size = size.small)
+    table.cell(dash, 1, 0, "visual stats*", text_color = color.gray, text_size = size.tiny)
+    table.cell(dash, 0, 1, "Resolved", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 1, str.tostring(closed), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 2, "TP / SL / Exp", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 2, str.tostring(nTP) + " / " + str.tostring(nSL) + " / " + str.tostring(nExp), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 3, "Win rate", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 3, na(wr) ? "—" : str.tostring(wr, "#.0") + "%", text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 4, "Avg R", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 4, na(avgR) ? "—" : str.tostring(avgR, "#.00"), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 5, "Active", text_color = color.gray, text_size = size.small)
+    table.cell(dash, 1, 5, str.tostring(active), text_color = color.white, text_size = size.small)
+    table.cell(dash, 0, 6, "*no costs; use Strategy file", text_color = color.gray, text_size = size.tiny)
+    table.merge_cells(dash, 0, 6, 1, 6)
