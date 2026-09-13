@@ -374,3 +374,39 @@ plateau, drawdown inside the prop floor, and Monte Carlo resampling.
 Does not yet survive: a cost structure meaningfully worse than RoboForex's,
 which is what the prop account is. Still missing: a forward record of any
 length, and confirmation that the long-side asymmetry is real.
+
+---
+
+# 2026-09-13 — the long-side "edge" was gold's direction
+
+The fold-level test (BUY beat SELL in 15 of 20 folds, no single trade carrying
+it) looked like a strategy property. It was tested once more against the
+boring explanation before anything was changed, and the boring explanation
+won.
+
+Gold rose **+87.9%** across the sample (2373 → 4458). Splitting folds by what
+gold itself did in each window:
+
+| gold in the window | BUY won | SELL won |
+|---|---|---|
+| rose | 11 | 1 |
+| fell | 4 | 4 |
+
+When gold fell the two sides split evenly, and in the steepest decline
+(−10.6%) shorts made +198.6 while longs lost −85.9. The asymmetry is the
+market's trend over two years, not the strategy. Restricting to longs would
+have fitted that trend and inverted in the first sustained gold decline.
+
+**Decision: both directions stay.** The PF 1.53 long-only figure is withdrawn
+as a candidate improvement.
+
+## Found while reviewing the first live week: live exits were never tested
+
+TradeManager moves the stop to entry and closes half the position at +1R,
+then trails the remainder at 1.5 ATR. The backtester had none of this —
+every published result (PF 1.38, the 15/15 plateau, Monte Carlo) assumed a
+fixed stop and a 3R target. In the first live week two winners reached
++1.93R and +2.04R of favourable excursion and banked about +0.9R each.
+
+The backtester now has `live_management=True`, mirroring TradeManager, so the
+validated exits and the live exits can be compared on identical signals.

@@ -60,6 +60,7 @@ def walk_forward(
     min_risk_reward: float = 0.0,
     max_hold_bars: int = 0,
     brain: object | None = None,
+    live_management: bool = False,
 ) -> WalkForwardResult:
     step = step or test_bars
     costs = cost_model or CostModel(spread_points=1.2, slippage_points=0.5, commission_per_lot=7.0)
@@ -80,6 +81,7 @@ def walk_forward(
         min_risk_reward=min_risk_reward,
         max_hold_bars=max_hold_bars,
         brain=brain,
+        live_management=live_management,
     )
     i = 0
     while True:

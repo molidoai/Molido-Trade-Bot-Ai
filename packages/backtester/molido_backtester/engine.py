@@ -41,6 +41,13 @@ class _OpenPos:
     # the horizon its own strategy declared rather than on one global number
     # applied to strategies that never asked for it. 0 means no time exit.
     max_hold_bars: int = 0
+    # Live trade management state (see BacktestEngine.live_management).
+    initial_stop_dist: float = 0.0
+    be_done: bool = False
+    partial_done: bool = False
+    # Net P&L already banked by a partial close, added to the final record so
+    # one position stays one trade and trade counts remain comparable.
+    realized_net: float = 0.0
 
 
 class BacktestEngine:
@@ -55,6 +62,7 @@ class BacktestEngine:
         min_risk_reward: float = 0.0,
         max_hold_bars: int = 0,
         brain: object | None = None,
+        live_management: bool = False,
     ):
         self.indicators = indicator_engine
         self.strategies = strategy_engine
@@ -73,6 +81,14 @@ class BacktestEngine:
         # describes roughly thirty times more trades than the bot would take,
         # chosen differently. Pass a brain to measure what actually runs.
         self.brain = brain
+        # The live bot does not hold to a fixed stop and target. TradeManager
+        # moves the stop to entry and closes half at +1R, then trails the rest
+        # at 1.5 ATR. Every published result -- PF 1.38, the sensitivity
+        # plateau, Monte Carlo -- was measured with plain SL/TP at 3R, so what
+        # trades live had never been tested. The first week showed it: two
+        # winners reached +1.93R and +2.04R and banked about +0.9R each.
+        # True mirrors TradeManager so the two can be compared.
+        self.live_management = live_management
         self._regime_engine = None
 
     def run(
@@ -117,7 +133,7 @@ class BacktestEngine:
                     slip_cost = abs(fill - exit_price) * open_pos.volume * (100_000 if not symbol.startswith("XAU") else 100)
                     swap = cost.swap_cost(open_pos.side, open_pos.volume,
                                           open_pos.entry_time, bar.open_time)
-                    pnl_net = pnl - commission - open_pos.commission_paid - swap
+                    pnl_net = pnl - commission - open_pos.commission_paid - swap + open_pos.realized_net
 
                     trades.append(BacktestTrade(
                         symbol=symbol,
@@ -142,6 +158,11 @@ class BacktestEngine:
                     returns.append(pnl_net / self.initial_capital)
                     open_pos = None
 
+            # --- Live trade management, applied after this bar's exit check ---
+            if (open_pos is not None and self.live_management
+                    and open_pos.initial_stop_dist > 0):
+                self._manage_like_live(open_pos, bar, window, cost, symbol)
+
             # --- Time exit: the measured horizon has run out ---
             if open_pos is not None and open_pos.max_hold_bars > 0                     and (i - open_pos.entry_bar) >= open_pos.max_hold_bars:
                 fill = cost.exit_cost_price(open_pos.side, bar.close)
@@ -150,7 +171,7 @@ class BacktestEngine:
                 slip_cost = abs(fill - bar.close) * open_pos.volume * (100_000 if not symbol.startswith("XAU") else 100)
                 swap = cost.swap_cost(open_pos.side, open_pos.volume,
                                       open_pos.entry_time, bar.open_time)
-                pnl_net = pnl - commission - open_pos.commission_paid - swap
+                pnl_net = pnl - commission - open_pos.commission_paid - swap + open_pos.realized_net
                 trades.append(BacktestTrade(
                     symbol=symbol,
                     side=open_pos.side,
@@ -300,6 +321,7 @@ class BacktestEngine:
                 commission_paid=commission,
                 slippage_paid=slip,
                 max_hold_bars=self._hold_limit(sig.strategy_name),
+                initial_stop_dist=stop_dist,
             )
 
         # Force close at end
@@ -310,7 +332,7 @@ class BacktestEngine:
             commission = cost.commission(open_pos.volume)
             swap = cost.swap_cost(open_pos.side, open_pos.volume,
                                   open_pos.entry_time, bar.open_time)
-            pnl_net = pnl - commission - open_pos.commission_paid - swap
+            pnl_net = pnl - commission - open_pos.commission_paid - swap + open_pos.realized_net
             trades.append(BacktestTrade(
                 symbol=symbol,
                 side=open_pos.side,
@@ -397,6 +419,60 @@ class BacktestEngine:
             return self.max_hold_bars
         strat = self.strategies.get(strategy_name)
         return int(getattr(strat, "max_hold_bars", 0) or 0)
+
+    def _manage_like_live(self, pos: _OpenPos, bar: Candle, window, cost, symbol: str) -> None:
+        """Mirror TradeManager: at +1R stop to entry and close half, then trail.
+
+        Checked against the bar's extreme, after the bar's SL/TP test, so a bar
+        cannot both bank the partial and be stopped at break-even -- the move to
+        break-even takes effect from the next bar, as it would live where the
+        modify lands after the price that triggered it.
+        """
+        d = pos.initial_stop_dist
+        buy = pos.side == "BUY"
+        one_r = pos.entry_price + d if buy else pos.entry_price - d
+        reached = bar.high >= one_r if buy else bar.low <= one_r
+
+        if reached and not pos.be_done:
+            pos.stop_loss = pos.entry_price
+            pos.be_done = True
+
+        if reached and not pos.partial_done:
+            half = round(pos.volume * 0.5, 2)
+            # Same rule as live: both the closed half and the remainder must be
+            # at least the broker minimum, otherwise nothing is closed and the
+            # position keeps its full size at break-even with no trail.
+            if half >= 0.01 and round(pos.volume - half, 2) >= 0.01:
+                share = half / pos.volume
+                fill = cost.exit_cost_price(pos.side, one_r)
+                pnl = self._pnl(pos.side, pos.entry_price, fill, half, symbol)
+                part_swap = cost.swap_cost(pos.side, half, pos.entry_time, bar.open_time)
+                pos.realized_net += pnl - cost.commission(half) - pos.commission_paid * share - part_swap
+                pos.commission_paid *= (1.0 - share)
+                pos.volume = round(pos.volume - half, 2)
+                pos.partial_done = True
+
+        if pos.partial_done:
+            atr = self._atr(window)
+            if atr > 0:
+                if buy:
+                    new_sl = bar.close - 1.5 * atr
+                    if (pos.stop_loss is None or new_sl > pos.stop_loss) and new_sl < bar.close:
+                        pos.stop_loss = new_sl
+                else:
+                    new_sl = bar.close + 1.5 * atr
+                    if (pos.stop_loss is None or new_sl < pos.stop_loss) and new_sl > bar.close:
+                        pos.stop_loss = new_sl
+
+    @staticmethod
+    def _atr(window, period: int = 14) -> float:
+        if len(window) < period + 1:
+            return 0.0
+        trs = []
+        for k in range(len(window) - period, len(window)):
+            c, prev = window[k], window[k - 1].close
+            trs.append(max(c.high - c.low, abs(c.high - prev), abs(c.low - prev)))
+        return sum(trs) / period
 
     @staticmethod
     def _check_exit(pos: _OpenPos, bar: Candle) -> tuple[float, str] | None:

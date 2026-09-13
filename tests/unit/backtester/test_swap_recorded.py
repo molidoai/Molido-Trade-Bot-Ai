@@ -32,7 +32,11 @@ def test_every_close_path_populates_it():
     src = (Path(__file__).resolve().parents[3]
            / "packages" / "backtester" / "molido_backtester" / "engine.py").read_text(encoding="utf-8")
     assert src.count("swap=swap,") == 3, "a close path is not recording financing"
-    assert src.count("swap = cost.swap_cost(") == 3
+    # Anchored to the start of the line: a plain substring count also matches
+    # part_swap = cost.swap_cost( in the live-management partial close, which
+    # charges financing on the banked half and is not a close path.
+    import re
+    assert len(re.findall(r"^\s*swap = cost\.swap_cost\(", src, re.M)) == 3
 
 
 def test_the_sign_convention_is_a_positive_cost():
